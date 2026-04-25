@@ -4,32 +4,29 @@ A disconnected environment is an environment that does not have full access to t
 
 OpenShift Container Platform is designed to perform many automatic functions that depend on an internet connection, such as retrieving release images from a registry or retrieving update paths and recommendations for the cluster. Without a direct internet connection, you must perform additional setup and configuration for your cluster to maintain full functionality in the disconnected environment.
 
-Source: [Understanding disconnected installation mirroring](https://docs.redhat.com/en/documentation/openshift_container_platform/4.17/html/installing_an_on-premise_cluster_with_the_agent-based_installer/understanding-disconnected-installation-mirroring)
+Source: [Understanding disconnected installation mirroring](https://docs.redhat.com/en/documentation/openshift_container_platform/4.21/html/installing_an_on-premise_cluster_with_the_agent-based_installer/understanding-disconnected-installation-mirroring)
 
 ---
 - [Installing OpenShift in an air-gapped environment using the Agent-Based Installer](#installing-openshift-in-an-air-gapped-environment-using-the-agent-based-installer)
   - [How it works](#how-it-works)
   - [Connected Mirroring vs Disconnected Mirroring](#connected-mirroring-vs-disconnected-mirroring)
   - [Bastion Host Preperation](#bastion-host-preperation)
+    - [Hostname](#hostname)
+    - [RHEL Subscription Manager](#rhel-subscription-manager)
     - [Networking](#networking)
     - [SSH](#ssh)
-    - [RHEL Subscription Manager](#rhel-subscription-manager)
     - [Command Line Interfaces (CLIs)](#command-line-interfaces-clis)
     - [Install Podman and Nmstate](#install-podman-and-nmstate)
+    - [Installing Podman Offline](#installing-podman-offline)
   - [Installing the Mirror Registry on the Bastion Host](#installing-the-mirror-registry-on-the-bastion-host)
+    - [Prerequisites](#prerequisites)
     - [Validating the installation](#validating-the-installation)
     - [Login into the Mirror Registry](#login-into-the-mirror-registry)
     - [Uninstalling the Mirror Registry](#uninstalling-the-mirror-registry)
   - [Mirroring Images](#mirroring-images)
-    - [Option 1 - Mirror the images to the local mirror registry](#option-1---mirror-the-images-to-the-local-mirror-registry)
-    - [Option 2 - Store Mirror-Images in a File](#option-2---store-mirror-images-in-a-file)
-  - [Preparing the disconneted Registry](#preparing-the-disconneted-registry)
-    - [SSH on the Mirror-Registry](#ssh-on-the-mirror-registry)
-    - [Installing Podman Offline](#installing-podman-offline)
-  - [Install the Mirrored Registry](#install-the-mirrored-registry)
-    - [Upload the mirrored images (mirror.tar)](#upload-the-mirrored-images-mirrortar)
-    - [Create the necessary section for the `install-config.yaml`](#create-the-necessary-section-for-the-install-configyaml)
-  - [Cluster Preperations](#cluster-preperations)
+  - [Creating the image set configuration](#creating-the-image-set-configuration)
+  - [Installing a disconnected Cluster using the Agent Based Installer](#installing-a-disconnected-cluster-using-the-agent-based-installer)
+    - [Cluster Preperations](#cluster-preperations)
   - [Configurations](#configurations)
   - [Create Agent iso](#create-agent-iso)
   - [Run a `httpd` webserver on the bastion to share the iso](#run-a-httpd-webserver-on-the-bastion-to-share-the-iso)
@@ -48,6 +45,27 @@ You can use a mirror registry for disconnected installations and to ensure that 
 
 ## Bastion Host Preperation
 
+### Hostname
+
+Make sure that your `hostname` is set correctly!
+
+```code
+hostnamectl
+```
+
+The hostname must be a fqdn!
+
+```code
+sudo hostnamectl set-hostname rguske-rhel9-disco-bastion.rguske.coe.muc.redhat.com
+sudo reboot
+```
+
+### RHEL Subscription Manager
+
+Configure RHEL Subscription Manager:
+
+`sudo subscription-manager register --username --password '' --auto-attach`
+
 ### Networking
 
 Setup a Bastion Host with two nics. One is connected to the "internet-zone" and the other one to the disconnected network.
@@ -58,78 +76,115 @@ Configure the interfaces accordingly:
 
 Configure the interface which has internet connection:
 
+```code
+nmcli con show
+
+NAME                UUID                                  TYPE      DEVICE
+System eth0         5fb06bd0-0bb0-7ffb-45f1-d6edd65f3e03  ethernet  eth0
+lo                  dd314177-6d3f-4ad3-a1af-2875d094c193  loopback  lo
+Wired connection 1  c8d40ef7-3d02-3ba5-b047-dacd6d013b24  ethernet  --
+```
+
 ```bash
-nmcli con mod ens33 ipv4.addresses 10.32.96.138/20
-nmcli con mod ens33 ipv4.gateway 10.32.111.254
-nmcli con mod ens33 ipv4.dns "10.32.96.1,10.32.96.31"
-nmcli con mod ens33 ipv4.method manual
+nmcli con mod "System eth0" \
+ipv4.addresses 10.32.96.145/20 \
+ipv4.gateway 10.32.111.254 \
+ipv4.dns "10.32.96.1,10.32.96.31" \
+ipv4.method manual
 ```
 
 Configure the interface which is connected to the disconnected network:
 
 ```bash
-nmcli con mod ens35 ipv4.addresses 192.168.69.208/24
-nmcli con mod ens35 ipv4.method manual
+nmcli con mod "Wired connection 1" \
+ipv4.addresses 192.168.69.208/24 \
+ipv4.method manual
 ```
 
 Bring both interfaces up:
 
-```bash
-nmcli con up ens33
-nmcli con up ens35
+```code
+nmcli dev reapply eth0 && nmcli dev reapply eth1
+
+Connection successfully reapplied to device 'eth0'.
+Connection successfully reapplied to device 'eth1'.
+```
+
+Alternatively:
+
+```code
+nmcli con up "System eth0" && nmcli con up "Wired connection 1"
+
+Connection successfully activated (D-Bus active path: /org/freedesktop/NetworkManager/ActiveConnection/25)
+Connection successfully activated (D-Bus active path: /org/freedesktop/NetworkManager/ActiveConnection/26)
+```
+
+Check the new config:
+
+```code
+ip -br a
+lo               UNKNOWN        127.0.0.1/8 ::1/128
+eth0             UP             10.32.96.145/20 2620:52:0:2060:d8:6dff:fe0f:3ed3/64 fe80::d8:6dff:fe0f:3ed3/64
+eth1             UP             192.168.69.208/24 fe80::a0eb:9896:d4e1:3fbb/64
 ```
 
 The configuration is stored under:
 
-```bash
-tree /etc/NetworkManager/system-connections/
-/etc/NetworkManager/system-connections/
-├── ens33.nmconnection
-└── ens35.nmconnection
+```code
+nmcli -f NAME,UUID,FILENAME con show
+NAME                UUID                                  FILENAME
+System eth0         5fb06bd0-0bb0-7ffb-45f1-d6edd65f3e03  /etc/sysconfig/network-scripts/ifcfg-eth0
+Wired connection 1  c8d40ef7-3d02-3ba5-b047-dacd6d013b24  /etc/NetworkManager/system-connections/Wired connection 1.nmconnection
+lo                  dd314177-6d3f-4ad3-a1af-2875d094c193  /run/NetworkManager/system-connections/lo.nmconnection
 ```
 
 Readable configuration:
 
 ```bash
-[connection]
-id=ens33
-uuid=3032436c-0c31-3c2e-b3ec-a8baf3fde9fd
-type=ethernet
-autoconnect-priority=-999
-interface-name=ens33
-timestamp=1740856507
-zone=public
+less /etc/sysconfig/network-scripts/ifcfg-eth0
 
-[ethernet]
-
-[ipv4]
-address1=10.32.96.138/20,10.32.111.254
-dns=10.32.96.1;10.32.96.31;
-method=manual
-
-[ipv6]
-addr-gen-mode=eui64
-method=auto
-
-[proxy]
+# Created by cloud-init automatically, do not edit.
+#
+AUTOCONNECT_PRIORITY=120
+BOOTPROTO=none
+DEVICE=eth0
+HWADDR=02:D8:6D:0F:3E:D3
+IPV6INIT=yes
+ONBOOT=yes
+TYPE=Ethernet
+USERCTL=no
+PROXY_METHOD=none
+BROWSER_ONLY=no
+IPADDR=10.32.96.145
+PREFIX=20
+GATEWAY=10.32.111.254
+DNS1=10.32.96.1
+DNS2=10.32.96.31
+DEFROUTE=yes
+IPV4_FAILURE_FATAL=no
+IPV6_AUTOCONF=yes
+IPV6_DEFROUTE=yes
+IPV6_FAILURE_FATAL=no
+NAME="System eth0"
+UUID=5fb06bd0-0bb0-7ffb-45f1-d6edd65f3e03
 ```
 
 And the other interface:
 
 ```bash
+less /etc/NetworkManager/system-connections/Wired\ connection\ 1.nmconnection
+
 [connection]
-id=ens35
-uuid=71d46c9a-0b20-4244-ba4c-c2999dcedd02
+id=Wired connection 1
+uuid=c8d40ef7-3d02-3ba5-b047-dacd6d013b24
 type=ethernet
-interface-name=ens35
-timestamp=1740597382
-zone=public
+autoconnect-priority=-999
+interface-name=eth1
 
 [ethernet]
 
 [ipv4]
-address1=192.168.69.208/24,10.32.111.254
-dns=192.168.68.6;10.32.96.1;
+address1=192.168.69.208/24
 method=manual
 
 [ipv6]
@@ -152,6 +207,21 @@ net.ipv4.ip_forward = 1
 
 Apply the changes: `sysctl -p`
 
+On Red Hat Enterprise Linux, `firewall-cmd` is provided by the firewalld package. It is not guaranteed to be installed in minimal VM images.
+
+Check whether firewalld is installed:
+
+```code
+rpm -q firewalld
+```
+
+If it is missing, install and enable it:
+
+```code
+sudo dnf install -y firewalld
+sudo systemctl enable --now firewalld
+```
+
 Allow forwarding:
 
 `firewall-cmd --permanent --add-forward-port=port=22:proto=tcp:toport=22`
@@ -159,8 +229,62 @@ Allow forwarding:
 Add trusted zones for both interfaces:
 
 ```bash
-firewall-cmd --permanent --zone=trusted --add-interface=ens35
-firewall-cmd --permanent --zone=public --add-interface=ens33
+firewall-cmd --permanent --zone=public --add-interface=eth0
+firewall-cmd --permanent --zone=trusted --add-interface=eth1
+```
+
+Check the configs:
+
+```code
+firewall-cmd --get-active-zones
+public
+  interfaces: eth0
+trusted
+  interfaces: eth1
+```
+
+Also:
+
+```code
+firewall-cmd --zone=public --list-all
+public (active)
+  target: default
+  icmp-block-inversion: no
+  interfaces: eth0
+  sources:
+  services: cockpit dhcpv6-client ssh
+  ports:
+  protocols:
+  forward: yes
+  masquerade: no
+  forward-ports:
+  source-ports:
+  icmp-blocks:
+  rich rules:
+```
+
+```code
+firewall-cmd --zone=trusted --list-all
+trusted (active)
+  target: ACCEPT
+  icmp-block-inversion: no
+  interfaces: eth1
+  sources:
+  services:
+  ports:
+  protocols:
+  forward: yes
+  masquerade: no
+  forward-ports:
+  source-ports:
+  icmp-blocks:
+  rich rules:
+```
+
+We will need to open up port 8443 for Quay:
+
+```code
+firewall-cmd --add-port 8443/tcp --permanent
 ```
 
 Reload firewall rules: `firewall-cmd --reload`
@@ -180,17 +304,11 @@ Check IP forwarding: `cat /proc/sys/net/ipv4/ip_forward`
 
 Configure `ssh`:
 
-`cat ~/.ssh/id_ed25519.pub | ssh rguske@bastion-rguske.rguske.coe.muc.redhat.com "mkdir -p ~/.ssh && cat >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys && chmod 700 ~/.ssh"`
+`cat ~/.ssh/id_ed25519.pub | ssh rguske@rguske-rhel9-disco-bastion.rguske.coe.muc.redhat.com "mkdir -p ~/.ssh && cat >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys && chmod 700 ~/.ssh"`
 
 - Generating an SSH key pair on your Bastion-Host. You can use this key pair to authenticate into the OpenShift Container Platform cluster’s nodes after it is deployed.
 
 `ssh-keygen -t ed25519 -N '' -f ~/.ssh/id_ed25519`
-
-### RHEL Subscription Manager
-
-Configure RHEL Subscription Manager:
-
-`sudo subscription-manager register --username --password '' --auto-attach`
 
 ### Command Line Interfaces (CLIs)
 
@@ -198,9 +316,9 @@ On the bastion host, download the necessary cli's from [Homepage](https://consol
 
 You could use `curl -LO <url>` for it:
 
-OpenShift Installer: `curl -LO https://mirror.openshift.com/pub/openshift-v4/clients/ocp/4.17.6/openshift-install-rhel9-amd64.tar.gz`
+OpenShift Installer: `curl -LO https://mirror.openshift.com/pub/openshift-v4/clients/ocp/4.21.11/openshift-install-rhel9-amd64.tar.gz`
 
-OpenShift Client: `curl -LO https://mirror.openshift.com/pub/openshift-v4/clients/ocp/4.17.6/openshift-client-linux-amd64-rhel9-4.17.6.tar.gz`
+OpenShift Client: `curl -LO https://mirror.openshift.com/pub/openshift-v4/clients/ocp/4.21.11/openshift-client-linux-amd64-rhel9-4.21.11.tar.gz`
 
 The "mirror" plugin for the OpenShift CLI client (oc) controls the process of mirroring all relevant container image for a full disconnected OpenShift installation in a central, declarative tool. Learn more(new window or tab)
 
@@ -212,36 +330,49 @@ Download and install a local, minimal single instance deployment of Red Hat Quay
 
 OpenShift Tiny Quay Registry: `curl -LO https://mirror.openshift.com/pub/cgw/mirror-registry/latest/mirror-registry-amd64.tar.gz`
 
+This helps untaring the packages:
+
+```code
+alias untar='tar -zxvf'
+```
+
 This is how it should like if you've downloaded all:
 
 ```code
-[rguske@bastion-rguske tools]$ tree
+tree
 .
 ├── clis
 │   ├── oc-mirror.rhel9.tar.gz
-│   ├── openshift-client-linux-amd64-rhel9-4.17.6.tar.gz
+│   ├── openshift-client-linux-amd64-rhel9-4.21.11.tar.gz
 │   └── openshift-install-rhel9-amd64.tar.gz
 └── mirror-registry
-    ├── execution-environment.tar
-    ├── image-archive.tar
-    ├── mirror-registry-amd64.tar.gz
-    ├── README.md
-    └── sqlite3.tar
+    └── mirror-registry-amd64.tar.gz
 ```
 
 Unpack the `.gz` files, except execution-environment.tar, image-archive.tar and sqlite3.tar of the folder mirror-registry and move them into `/usr/local/bin`:
 
 ```code
+sudp mv {kubectl,oc,oc-mirror,openshift-install-fips} /use/local/bin
+```
+
+Apply rights:
+
+```code
+sudo chown -R $USER /usr/local/bin/{kubectl,oc,oc-mirror,openshift-install-fips}
+sudo chmod +x /usr/local/bin/{kubectl,oc,oc-mirror,openshift-install-fips}
+```
+
+```code
 tree /usr/local/bin
 /usr/local/bin
-├── dstp
 ├── execution-environment.tar
+├── firstboot-network-firewall.sh
 ├── image-archive.tar
 ├── kubectl
 ├── mirror-registry
 ├── oc
 ├── oc-mirror
-├── openshift-install
+├── openshift-install-fips
 └── sqlite3.tar
 
 0 directories, 9 file
@@ -256,450 +387,13 @@ In order to run the mirror registry, the bastion host needs a container-runtime 
 
 Podman is the runtime of choice and is included in the `container-tools` package.
 
-Install it via `dnf install container-tools -y`.
+Install it via `sudo dnf install container-tools -y`.
 
-The installer also uses `nmstatectl` for the creation of the agent.iso. Install it via `dnf install nmstate -y`. Otherwise, you'll get the error:
+The installer also uses `nmstatectl` for the creation of the agent.iso. Install it via `sudo dnf install nmstate -y`. Otherwise, you'll get the error:
 
 ```code
 FATAL   * failed to validate network yaml for host 0, install nmstate package, exec: "nmstatectl": executable file not found in $PATH
 ```
-
-## Installing the Mirror Registry on the Bastion Host
-
-You can use any container registry that supports Docker v2-2, such as Red Hat Quay, the mirror registry for Red Hat OpenShift, Artifactory, Sonatype Nexus Repository, or Harbor.
-
-> The OpenShift image registry cannot be used as the target registry because it does not support pushing without a tag, which is required during the mirroring process.
-
-Install the mirror registry:
-
-```code
-[root@bastion-rguske mirror-registry]# ./mirror-registry install --quayHostname $(hostname -f) --quayRoot '/home/rguske/tools/mirror-registry/root' --initPassword 'r3dh4t1!' --verbose
-
-   __   __
-  /  \ /  \     ______   _    _     __   __   __
- / /\ / /\ \   /  __  \ | |  | |   /  \  \ \ / /
-/ /  / /  \ \  | |  | | | |  | |  / /\ \  \   /
-\ \  \ \  / /  | |__| | | |__| | / ____ \  | |
- \ \/ \ \/ /   \_  ___/  \____/ /_/    \_\ |_|
-  \__/ \__/      \ \__
-                  \___\ by Red Hat
- Build, Store, and Distribute your Containers
-
-INFO[2025-02-18 19:04:32] Install has begun
-DEBU[2025-02-18 19:04:32] Ansible Execution Environment Image: quay.io/quay/mirror-registry-ee:latest
-DEBU[2025-02-18 19:04:32] Pause Image: registry.access.redhat.com/ubi8/pause:8.10-5
-DEBU[2025-02-18 19:04:32] Quay Image: registry.redhat.io/quay/quay-rhel8:v3.12.5
-DEBU[2025-02-18 19:04:32] Redis Image: registry.redhat.io/rhel8/redis-6:1-190
-INFO[2025-02-18 19:04:32] Found execution environment at /home/rguske/tools/mirror-registry/execution-environment.tar
-INFO[2025-02-18 19:04:32] Loading execution environment from execution-environment.tar
-DEBU[2025-02-18 19:04:32] Importing execution environment with command: /bin/bash -c /usr/bin/podman image import \
-                                        --change 'ENV PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin' \
-                                        --change 'ENV HOME=/home/runner' \
-                                        --change 'ENV container=oci' \
-                                        --change 'ENTRYPOINT=["entrypoint"]' \
-                                        --change 'WORKDIR=/runner' \
-                                        --change 'EXPOSE=6379' \
-                                        --change 'VOLUME=/runner' \
-                                        --change 'CMD ["ansible-runner", "run", "/runner"]' \
-                                        - quay.io/quay/mirror-registry-ee:latest < /home/rguske/tools/mirror-registry/execution-environment.tar
-Getting image source signatures
-Copying blob 6c18bbba5eae skipped: already exists
-Copying config 89ddb068cb done   |
-Writing manifest to image destination
-sha256:89ddb068cbda13bef116a6a6eae687549a249c610eb23388c7d56f6b87a2be4b
-INFO[2025-02-18 19:04:38] Detected an installation to localhost
-
-[...]
-
-PLAY RECAP **********************************************************************************************************************************************************************************************************************************
-root@bastion-rguske.rguske.coe.muc.redhat.com : ok=48   changed=27   unreachable=0    failed=0    skipped=16   rescued=0    ignored=0
-
-INFO[2025-02-18 19:08:31] Quay installed successfully, config data is stored in /home/rguske/tools/mirror-registry/root
-INFO[2025-02-18 19:08:31] Quay is available at https://bastion-rguske.rguske.coe.muc.redhat.com:8443 with credentials (init, r3dh4t1!)
-```
-
-Alternative customizations examples:
-
-1.: `mirror-registry install --quayHostname $(hostname -f) --quayRoot '/home/rguske/tools/mirror-registry/root'`
-
-2.: `/mirror-registry install --quayHostname mirror.example.org --sslKey tls.key --targetHostname internal.mirror --quayRoot /var/mirror-registry --initPassword changeme`
-
-Source: [Mirror registry for Red Hat OpenShift flags](https://docs.redhat.com/en/documentation/openshift_container_platform/4.17/html-single/disconnected_environments/index#uninstalling-mirror-registry_installing-mirroring-creating-registry).
-
-### Validating the installation
-
-Validating the endpoint using `curl`:
-
-```code
-curl -k https://bastion-rguske.rguske.coe.muc.redhat.com:8443/health/instance
-
-{"data":{"services":{"auth":true,"database":true,"disk_space":true,"registry_gunicorn":true,"service_key":true,"web_gunicorn":true}},"status_code":200}
-```
-
-Checking the certificate:
-
-```code
-echo | openssl s_client -connect bastion-rguske.rguske.coe.muc.redhat.com:8443 -showcerts
-
-Connecting to 10.32.96.138
-CONNECTED(00000005)
-depth=1 C=US, ST=VA, L=New York, O=Quay, OU=Division, CN=bastion-rguske.rguske.coe.muc.redhat.com
-verify error:num=19:self-signed certificate in certificate chain
-verify return:1
-depth=1 C=US, ST=VA, L=New York, O=Quay, OU=Division, CN=bastion-rguske.rguske.coe.muc.redhat.com
-verify return:1
-depth=0 CN=quay-enterprise
-verify return:1
----
-Certificate chain
- 0 s:CN=quay-enterprise
-   i:C=US, ST=VA, L=New York, O=Quay, OU=Division, CN=bastion-rguske.rguske.coe.muc.redhat.com
-   a:PKEY: rsaEncryption, 2048 (bit); sigalg: RSA-SHA256
-   v:NotBefore: Feb 18 18:05:41 2025 GMT; NotAfter: Feb  9 18:05:41 2026 GMT
------BEGIN CERTIFICATE-----
-
-[...]
-```
-
-Also, validate the certificate which we are going trust on our bastion host.
-
-```code
-openssl x509 -in root/quay-config/ssl.cert -text -noout
-Certificate:
-    Data:
-        Version: 3 (0x2)
-        Serial Number:
-            1b:4a:63:52:f7:7b:34:ab:0f:8d:75:83:2f:47:19:51:ea:49:8d:4a
-        Signature Algorithm: sha256WithRSAEncryption
-        Issuer: C = US, ST = VA, L = New York, O = Quay, OU = Division, CN = bastion-rguske.rguske.coe.muc.redhat.com
-        Validity
-            Not Before: Feb 18 18:05:41 2025 GMT
-            Not After : Feb  9 18:05:41 2026 GMT
-
-[...]
-```
-
-Systemd auto-start is also configured:
-
-```code
-sudo systemctl list-units --type service | grep quay
-  quay-app.service                                      loaded active running Quay Container
-  quay-pod.service                                      loaded active exited  Infra Container for Quay
-  quay-redis.service                                    loaded active running Redis Podman Container for Quay
-```
-
-### Login into the Mirror Registry
-
-```code
-podman login -u init -p 'r3dh4t1!' https://bastion-rguske.rguske.coe.muc.redhat.com:8443 --tls-verify=false
-```
-
-It is also possible without using the option `--tls-verify=false` by trusting the newly created certificates which are stored in `root` / `quay-config`:
-
-```code
-[rguske@bastion-rguske mirror-registry]$ tree
-.
-├── execution-environment.tar
-├── image-archive.tar
-├── mirror-registry
-├── mirror-registry-amd64.tar.gz
-├── pause.tar
-├── quay.tar
-├── README.md
-├── redis.tar
-├── root
-│   ├── quay-config
-│   │   ├── config.yaml
-│   │   ├── openssl.cnf
-│   │   ├── ssl.cert
-│   │   ├── ssl.csr
-│   │   └── ssl.key
-│   └── quay-rootCA
-│       ├── rootCA.key
-│       └── rootCA.pem
-└── sqlite3.tar
-```
-
-Copy the certs:
-
-`cp root/quay-config/ssl.cert /etc/pki/ca-trust/source/anchors/`
-
-```code
-tree /etc/pki/ca-trust/source/anchors/
-└── ssl.cert
-
-0 directories, 1 file
-```
-
-Update the trust:
-
-`update-ca-trust`
-
-Logout:
-
-```code
-podman logout https://bastion-rguske.rguske.coe.muc.redhat.com:8443
-
-Removed login credentials for bastion-rguske.rguske.coe.muc.redhat.com:8443
-```
-
-Login again:
-
-```code
-podman login -u init -p 'r3dh4t1!' 'https://bastion-rguske.rguske.coe.muc.redhat.com:8443'
-
-Login Succeeded!
-```
-
-Browsing the Quay mirror-registry:
-
-![quay-mirror-registry](assets/quay-mirror-registry.png)
-
-### Uninstalling the Mirror Registry
-
-`mirror-registry uninstall`
-
-## Mirroring Images
-
-> You must have access to the internet to obtain the necessary container images. In this procedure, you place your mirror registry on a mirror host that has access to both your network and the internet. If you do not have access to a mirror host, use the [Mirroring Operator catalogs](https://docs.redhat.com/en/documentation/openshift_container_platform/4.17/html-single/disconnected_environments/index#olm-mirror-catalog_installing-mirroring-installation-images) for use with disconnected clusters procedure to copy images to a device you can move across network boundaries with.
-
-Procedure and prerequisites:
-
-- You configured a mirror registry to use in your disconnected environment.
-- You identified an image repository location on your mirror registry to mirror images into.
-- You provisioned a mirror registry account that allows images to be uploaded to that image repository.
-- You have write access to the mirror registry.
-
-Obtain your [pull secret from Red Hat OpenShift Cluster Manager](https://console.redhat.com/openshift/install/pull-secret) and paste the data into a `json` file.
-
-Make a copy of your pull secret in JSON format by running the following command:
-
-`cat pull_secret | jq . > $(pwd)/pull_secret.json`
-
-Example:
-
-```json
-{
-  "auths": {
-    "cloud.openshift.com": {
-      "auth": "b3BlbnNo...",
-      "email": "you@example.com"
-    },
-    "quay.io": {
-      "auth": "b3BlbnNo...",
-      "email": "you@example.com"
-    },
-    "registry.connect.redhat.com": {
-      "auth": "NTE3Njg5Nj...",
-      "email": "you@example.com"
-    },
-    "registry.redhat.io": {
-      "auth": "NTE3Njg5Nj...",
-      "email": "you@example.com"
-    }
-  }
-}
-```
-
-Next up is to generate the base64-encoded user name and password or token for your mirror registry by running the following command:
-
-`echo -n '<user_name>:<password>' | base64 -w0`
-
-For <user_name> and <password>, specify the user name and password that you configured for your registry.
-
-Edit the JSON file and add a section that describes your registry to it:
-
-```json
-  "auths": {
-    "bastion-rguske.rguske.coe.muc.redhat.com:8443": {
-      "auth": "<base64 credentials>",
-      "email": "you@example.com"
-    }
-  },
-```
-
-Mirror the OpenShift Container Platform image repository to your registry to use during cluster installation or upgrade.
-
-Determine the desired OpenShift version via [OpenShift Container Platform downloads page](https://access.redhat.com/downloads/content/290/).
-
-Example: `4.17.16`
-
-1. Export the release version: `export OCP_RELEASE='4.17.16'`
-2. Export the local registry name and host port: `export LOCAL_REGISTRY='bastion-rguske.rguske.coe.muc.redhat.com:8443'`
-3. Export the local repository name: `export LOCAL_REPOSITORY='ocp4/openshift4'`
-4. Export the name of the repository to mirror: `export PRODUCT_REPO='openshift-release-dev'`
-5. Export the path to your registry pull secret: `export LOCAL_SECRET_JSON='/home/rguske/tools/mirror-registry/mirroring/pull_secret.json'`
-6. Export the release mirror: `export RELEASE_NAME='ocp-release'`
-7. Export the type of architecture for your cluster: `export ARCHITECTURE='x86_64'`
-
-### Option 1 - Mirror the images to the local mirror registry
-
-![mirroring-images](assets/openshift-mirror-registry-diagramm-2.png)
-
-Run the image-mirror process dry run:
-
-```code
-oc adm release mirror -a ${LOCAL_SECRET_JSON}  \
---from=quay.io/${PRODUCT_REPO}/${RELEASE_NAME}:${OCP_RELEASE}-${ARCHITECTURE} \
---to=${LOCAL_REGISTRY}/${LOCAL_REPOSITORY} \
---to-release-image=${LOCAL_REGISTRY}/${LOCAL_REPOSITORY}:${OCP_RELEASE}-${ARCHITECTURE} --dry-run
-```
-
-Example `--dry-run` output:
-
-```code
-
-[...]
-
-phase 0:
-  bastion-rguske.rguske.coe.muc.redhat.com:8443 ocp4/openshift4 blobs=440 mounts=0 manifests=191 shared=4
-
-info: Planning completed in 37.84s
-info: Dry run complete
-
-Success
-Update image:  bastion-rguske.rguske.coe.muc.redhat.com:8443/ocp4/openshift4:4.17.16-x86_64
-Mirror prefix: bastion-rguske.rguske.coe.muc.redhat.com:8443/ocp4/openshift4
-Mirror prefix: bastion-rguske.rguske.coe.muc.redhat.com:8443/ocp4/openshift4:4.17.16-x86_64
-
-To use the new mirrored repository to install, add the following section to the install-config.yaml:
-
-imageContentSources:
-- mirrors:
-  - bastion-rguske.rguske.coe.muc.redhat.com:8443/ocp4/openshift4
-  source: quay.io/openshift-release-dev/ocp-release
-- mirrors:
-  - bastion-rguske.rguske.coe.muc.redhat.com:8443/ocp4/openshift4
-  source: quay.io/openshift-release-dev/ocp-v4.0-art-dev
-
-
-To use the new mirrored repository for upgrades, use the following to create an `ImageContentSourcePolicy`:
-
-apiVersion: operator.openshift.io/v1alpha1
-kind: ImageContentSourcePolicy
-metadata:
-  name: example
-spec:
-  repositoryDigestMirrors:
-  - mirrors:
-    - bastion-rguske.rguske.coe.muc.redhat.com:8443/ocp4/openshift4
-    source: quay.io/openshift-release-dev/ocp-release
-  - mirrors:
-    - bastion-rguske.rguske.coe.muc.redhat.com:8443/ocp4/openshift4
-    source: quay.io/openshift-release-dev/ocp-v4.0-art-dev
-```
-
-**Now** without the `--dry-run` option:
-
-```code
-oc adm release mirror -a ${LOCAL_SECRET_JSON}  \
---from=quay.io/${PRODUCT_REPO}/${RELEASE_NAME}:${OCP_RELEASE}-${ARCHITECTURE} \
---to=${LOCAL_REGISTRY}/${LOCAL_REPOSITORY} \
---to-release-image=${LOCAL_REGISTRY}/${LOCAL_REPOSITORY}:${OCP_RELEASE}-${ARCHITECTURE}
-```
-
-This command pulls the release information as a digest, and its output includes the `imageContentSources` data that you require when you install your cluster.
-
-Examople output:
-
-```code
-
-[...]
-
-sha256:d5fcfe5b11c4bf72e4948de4afd5c8b0e620a53bd2cd6d677236568a89de1d85 bastion-rguske.rguske.coe.muc.redhat.com:8443/ocp4/openshift4:4.17.16-x86_64-multus-whereabouts-ipam-cni
-sha256:cf073f3284a1571d2e9641958bccaa033a1183dda441e94097efb3778e0bd240 bastion-rguske.rguske.coe.muc.redhat.com:8443/ocp4/openshift4:4.17.16-x86_64-gcp-machine-controllers
-info: Mirroring completed in 12m31.32s (26.77MB/s)
-
-Success
-Update image:  bastion-rguske.rguske.coe.muc.redhat.com:8443/ocp4/openshift4:4.17.16-x86_64
-Mirror prefix: bastion-rguske.rguske.coe.muc.redhat.com:8443/ocp4/openshift4
-Mirror prefix: bastion-rguske.rguske.coe.muc.redhat.com:8443/ocp4/openshift4:4.17.16-x86_64
-
-To use the new mirrored repository to install, add the following section to the install-config.yaml:
-
-imageContentSources:
-- mirrors:
-  - bastion-rguske.rguske.coe.muc.redhat.com:8443/ocp4/openshift4
-  source: quay.io/openshift-release-dev/ocp-release
-- mirrors:
-  - bastion-rguske.rguske.coe.muc.redhat.com:8443/ocp4/openshift4
-  source: quay.io/openshift-release-dev/ocp-v4.0-art-dev
-
-
-To use the new mirrored repository for upgrades, use the following to create an `ImageContentSourcePolicy`:
-
-
-apiVersion: operator.openshift.io/v1alpha1
-kind: ImageContentSourcePolicy
-metadata:
-  name: example
-spec:
-  repositoryDigestMirrors:
-  - mirrors:
-    - bastion-rguske.rguske.coe.muc.redhat.com:8443/ocp4/openshift4
-    source: quay.io/openshift-release-dev/ocp-release
-  - mirrors:
-    - bastion-rguske.rguske.coe.muc.redhat.com:8443/ocp4/openshift4
-    source: quay.io/openshift-release-dev/ocp-v4.0-art-dev
-```
-
-Record the entire `imageContentSources` section from the output of the previous command. The information about your mirrors is unique to your mirrored repository, and you must add the `imageContentSources` section to the install-config.yaml file during installation.
-
-If the local container registry is connected to the mirror host, run the following command:
-
-`oc adm release extract -a ${LOCAL_SECRET_JSON} --command=openshift-install "${LOCAL_REGISTRY}/${LOCAL_REPOSITORY}:${OCP_RELEASE}-${ARCHITECTURE}"`
-
-### Option 2 - Store Mirror-Images in a File
-
-![mirror-registry](assets/openshift-mirror-registry-diagramm-3.png)
-
-Example: `4.17.16`
-
-1. Export the release version: `export OCP_RELEASE='4.17.16'`
-2. Export the name of the repository to mirror: `export PRODUCT_REPO='openshift-release-dev'`
-3. Export the path to your registry pull secret: `export LOCAL_SECRET_JSON='/home/rguske/tools/mirror-registry/mirroring/pull_secret.json'`
-4. Export the release mirror: `export RELEASE_NAME='ocp-release'`
-5. Export the type of architecture for your cluster: `export ARCHITECTURE='x86_64'`
-6. Export the path to the directory to host the mirrored images: `REMOVABLE_MEDIA_PATH='/home/rguske/tools/mirror-registry/files/'`
-
-Run a `--dry-run` first: `oc adm release mirror -a ${LOCAL_SECRET_JSON} --to-dir=${REMOVABLE_MEDIA_PATH}/mirror quay.io/${PRODUCT_REPO}/${RELEASE_NAME}:${OCP_RELEASE}-${ARCHITECTURE} --dry-run`
-
-The output includes also the command, how to upload the file into the disconnected Mirror-Registry.
-
-Example:
-
-```code
-
-[...]
-
-      sha256:fdbd712a9f40a59d72ef856e9769d025adced12ea1cf4f7e5cc1531648dedb80 -> 4.17.16-x86_64-ibm-cloud-controller-manager
-      sha256:ff0f1633d8a71bc0093c3981f9f96cfee6c697c8e494ec88932d44fdafa6b437 -> 4.17.16-x86_64-cluster-autoscaler
-      sha256:ffc7682846d663106e2851e01b328aeb7a1c31b9db93db53e8f3b43b76767587 -> 4.17.16-x86_64-driver-toolkit
-  stats: shared=4 unique=436 size=18.73GiB ratio=0.99
-
-phase 0:
-   openshift/release blobs=440 mounts=0 manifests=191 shared=4
-
-info: Planning completed in 38.31s
-info: Dry run complete
-
-Success
-Update image:  openshift/release:4.17.16-x86_64
-
-To upload local images to a registry, run:
-
-    oc image mirror --from-dir=/home/rguske/tools/mirror-registry/files//mirror 'file://openshift/release:4.17.16-x86_64*' REGISTRY/REPOSITORY
-
-info: Write configmap signature file /home/rguske/tools/mirror-registry/files/mirror/config/signature-sha256-e0907823bc8989b0.json
-```
-
-## Preparing the disconneted Registry
-
-### SSH on the Mirror-Registry
-
-Generating an SSH key pair on your disconnected-registry. You can use this key pair to authenticate into the OpenShift Container Platform cluster’s nodes after it is deployed.
-
-`ssh-keygen -t ed25519 -N '' -f ~/.ssh/id_ed25519`
 
 ### Installing Podman Offline
 
@@ -753,165 +447,437 @@ EOF
 `dnf install podman -y`
 `dnf install nmstate -y`
 
-## Install the Mirrored Registry
+## Installing the Mirror Registry on the Bastion Host
 
-I've simply `scp`ed the existing files from my bastion host to the mirror registry. Simply follow the installation instructions which are provided in section [Mirror-Registry](#mirror-registry).
+### Prerequisites
 
-Example: `./mirror-registry install --quayHostname $(hostname -f) --quayRoot '/home/rguske/mirror/root' --initPassword 'r3dh4t1!' --verbose`
+- An OpenShift Container Platform subscription.
+- Red Hat Enterprise Linux (RHEL) 8 and 9 with Podman 3.4.2 or later and OpenSSL installed. If you are using Podman 5.7 or later, see "Configuring rootless Podman networking".
+- Fully qualified domain name for the Red Hat Quay service, which must resolve through a DNS server.
+- Key-based SSH connectivity on the target host. SSH keys are automatically generated for local installs. For remote hosts, you must generate your own SSH keys.
+- 2 or more vCPUs.
+- 8 GB of RAM.
+- About 12 GB for OpenShift Container Platform 4.21 release images, or about 358 GB for OpenShift Container Platform 4.21 release images and OpenShift Container Platform 4.21 Red Hat Operator images.
 
-### Upload the mirrored images (mirror.tar)
+You can use any container registry that supports Docker v2-2, such as Red Hat Quay, the mirror registry for Red Hat OpenShift, Artifactory, Sonatype Nexus Repository, or Harbor.
+> The OpenShift image registry cannot be used as the target registry because it does not support pushing without a tag, which is required during the mirroring process.
 
-![mirroring-images](assets/openshift-mirror-registry-diagramm-4.png)
+Install the mirror registry:
 
-Example: `4.17.16`
-
-1. Export the release version: `export OCP_RELEASE='4.17.16'`
-2. Export the path to your registry pull secret: `export LOCAL_SECRET_JSON='/root/mirror/pull_secret.json'`
-3. Export the local registry name and host port: `export LOCAL_REGISTRY='mirror-rguske.disco.local:8443'`
-4. Export the local repository name: `export LOCAL_REPOSITORY='ocp4/openshift4'`
-5. Export the path to the directory to host the mirrored images: `REMOVABLE_MEDIA_PATH='/root/mirror/files/'`
-
-```code
-export OCP_RELEASE='4.17.16' \
-export LOCAL_SECRET_JSON='/root/mirror/pull_secret.json' \
-export LOCAL_REGISTRY='mirror-rguske.disco.local:8443' \
-export LOCAL_REPOSITORY='ocp4/openshift4' \
-REMOVABLE_MEDIA_PATH='/root/mirror/files/'
-```
-
-Run a `--dry-run` first: `oc image mirror -a ${LOCAL_SECRET_JSON} --from-dir=${REMOVABLE_MEDIA_PATH}/mirror "file://openshift/release:${OCP_RELEASE}*" ${LOCAL_REGISTRY}/${LOCAL_REPOSITORY} --dry-run`
-
-Output example:
+At this point it is important to understand that my bastion is dual-homed.
 
 ```code
-mirror-rguske.disco.local:8443/
-  ocp4/openshift4
-    blobs:
-      file://openshift/release sha256:44d117d635acf411b6b4106c39d1cdcadbe7b7b49d48995c3585269733701f6a 462B
-      file://openshift/release sha256:b784c3277c21e7f78587090bfd2b4d24f1c5f8505d1210f4e4175390b3655da8 1.679KiB
-      file://openshift/release sha256:8c4004c8d3c8396589d5e843f5815bbc9ceb61ec353566b16f49548f6444dc6b 2.162KiB
-      file://openshift/release sha256:9dad063a624b62064bf25dbbc2e802e472d636056f661f2a0be73efd8a4da98b 2.286KiB
-      file://openshift/release sha256:214b29fa1526332990ca6413cd27a61f39adabc342b51269d1fa2f7f5a240e22 5.52KiB
-      file://openshift/release sha256:7b635424ae23cca4e5456b1a29119f1f8e6914a21673530eb3c8e0bf18713d77 5.866KiB
-      file://openshift/release sha256:91fcc15c07381d7757ea0164c9fbcb589160f70ed8360e2e28a44121e6d4aa4b 6.021KiB
-      file://openshift/release sha256:b0afd6b557b0e2f07c2e29e8aa3a85941de588ffa9c05282eb987af57693d013 9.431KiB
-      file://openshift/release sha256:185568852b898e4fc5c9316ef4c13358dcfaafcdd8e680970e5d12595180e3c1 15.03KiB
-      file://openshift/release sha256:c4f9576f0eeffa4d01b6805fbc2b195ebec01a50f0243a37f9424014b2849b0e 15.46KiB
-      file://openshift/release sha256:9ca7275efa88a3cf1d26018b616a6e53bad421c1dc6594a5d67e7f45dd17a82f 16.03KiB
-      file://openshift/release sha256:a3474d06adb3292aa98f8ac04cedd254c1188ca720fa46ab4329a4e0f2302720 16.33KiB
-      file://openshift/release sha256:107c685af2958d2e0e8a6f11c64b269c43755ad121487b230fcb5c23a2f4ab56 17.74KiB
-[...]
-
-[...]
-      sha256:f5c2ee214868da1dda796d8743c14581f01a8894f0f9c2bb362fda1cad4a0313 -> 4.17.16-x86_64-csi-external-snapshotter
-      sha256:f6323d0256ae364c545d8471b34a0f8c10ac4f4a039ea5e141c84718b65feb89 -> 4.17.16-x86_64-oauth-proxy
-      sha256:f96d0fc3eab2995460460cf705b935d6b9231fa787680f00a99aec07c8e40e67 -> 4.17.16-x86_64-machine-api-operator
-      sha256:f989850dede9f3b12297a9d23a10c494c5cc3536cf09a4318f3640ffa3186f65 -> 4.17.16-x86_64-console
-      sha256:f9b760ba1e67e0544fea6493b79c5b08bed512057831028c72c8eafcdd92c423 -> 4.17.16-x86_64-powervs-machine-controllers
-      sha256:fc2fb3cef768c9ff2ce5c24467f58d13345efad96bac49ff34952228e8c6100a -> 4.17.16-x86_64-cluster-bootstrap
-      sha256:fdb7df38c23a8f1b4579e353141cf71e55b1a413e03ee1e17a4d6493305c9c2f -> 4.17.16-x86_64-csi-snapshot-validation-webhook
-      sha256:fdbd712a9f40a59d72ef856e9769d025adced12ea1cf4f7e5cc1531648dedb80 -> 4.17.16-x86_64-ibm-cloud-controller-manager
-      sha256:ff0f1633d8a71bc0093c3981f9f96cfee6c697c8e494ec88932d44fdafa6b437 -> 4.17.16-x86_64-cluster-autoscaler
-      sha256:ffc7682846d663106e2851e01b328aeb7a1c31b9db93db53e8f3b43b76767587 -> 4.17.16-x86_64-driver-toolkit
-  stats: shared=0 unique=440 size=18.73GiB ratio=1.00
-
-phase 0:
-  mirror-rguske.disco.local:8443 ocp4/openshift4 blobs=440 mounts=0 manifests=191 shared=0
-
-info: Planning completed in 70ms
-info: Dry run complete
+dig +short rguske-rhel9-disco-bastion.rguske.coe.muc.redhat.com
+10.32.96.145
+dig +short rguske-rhel9-disco-bastion.disco.local
+192.168.69.208
 ```
 
-The output includes also the command, how to upload the file into the disconnected Mirror-Registry.
-
-`oc image mirror --from-dir=${REMOVABLE_MEDIA_PATH}/mirror "file://openshift/release:${OCP_RELEASE}*" ${LOCAL_REGISTRY}/${LOCAL_REPOSITORY}`
-
-Example output:
+In this scenario it is important to use the DNS record which points to the IP in the disco subnet.
 
 ```code
-[root@mirror-rguske mirror]# oc image mirror --from-dir=${REMOVABLE_MEDIA_PATH}/mirror "file://openshift/release:${OCP_RELEASE}*" ${LOCAL_REGISTRY}/${LOCAL_REPOSITORY}
-mirror-rguske.disco.local:8443/
-  ocp4/openshift4
-    blobs:
-      file://openshift/release sha256:44d117d635acf411b6b4106c39d1cdcadbe7b7b49d48995c3585269733701f6a 462B
-      file://openshift/release sha256:b784c3277c21e7f78587090bfd2b4d24f1c5f8505d1210f4e4175390b3655da8 1.679KiB
+[root@bastion-rguske mirror-registry]# mirror-registry install --quayHostname rguske-rhel9-disco-bastion.disco.local --quayRoot '/home/$USER/downloads/mirror-registry/root' --initPassword 'r3dh4t1!' --verbose
+
+   __   __
+  /  \ /  \     ______   _    _     __   __   __
+ / /\ / /\ \   /  __  \ | |  | |   /  \  \ \ / /
+/ /  / /  \ \  | |  | | | |  | |  / /\ \  \   /
+\ \  \ \  / /  | |__| | | |__| | / ____ \  | |
+ \ \/ \ \/ /   \_  ___/  \____/ /_/    \_\ |_|
+  \__/ \__/      \ \__
+                  \___\ by Red Hat
+ Build, Store, and Distribute your Containers
+
+INFO[2026-04-22 05:16:03] Install has begun
+DEBU[2026-04-22 05:16:03] Ansible Execution Environment Image: quay.io/quay/mirror-registry-ee:latest
+DEBU[2026-04-22 05:16:03] Pause Image: registry.access.redhat.com/ubi8/pause:8.10-5
+DEBU[2026-04-22 05:16:03] Quay Image: registry.redhat.io/quay/quay-rhel8:v3.12.14
+DEBU[2026-04-22 05:16:03] Redis Image: registry.redhat.io/rhel8/redis-6:1-1766406130
+INFO[2026-04-22 05:16:03] Found execution environment at /usr/local/bin/execution-environment.tar
+INFO[2026-04-22 05:16:03] Loading execution environment from execution-environment.tar
+DEBU[2026-04-22 05:16:03] Importing execution environment with command: /bin/bash -c /usr/bin/podman image import \
+                                        --change 'ENV PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin' \
+                                        --change 'ENV HOME=/home/runner' \
+                                        --change 'ENV container=oci' \
+                                        --change 'ENTRYPOINT=["entrypoint"]' \
+                                        --change 'WORKDIR=/runner' \
+                                        --change 'EXPOSE=6379' \
+                                        --change 'VOLUME=/runner' \
+                                        --change 'CMD ["ansible-runner", "run", "/runner"]' \
+                                        - quay.io/quay/mirror-registry-ee:latest < /usr/local/bin/execution-environment.tar
+Getting image source signatures
+Copying blob 159de7f3f142 done   |
+Copying config 3055d6ebc0 done   |
+Writing manifest to image destination
+sha256:3055d6ebc0dd81d1b676e94a7c1c06eef2c94ddc5abe2f197147b013184afd81
+INFO[2026-04-22 05:16:13] Detected an installation to localhost
+INFO[2026-04-22 05:16:13] Did not find SSH key in default location. Attempting to set up SSH keys.
+INFO[2026-04-22 05:16:13] Generating SSH Key
+Generating public/private rsa key pair.
+Your identification has been saved in /root/.ssh/quay_installer
+Your public key has been saved in /root/.ssh/quay_installer.pub
+
 [...]
 
-uploading: mirror-rguske.disco.local:8443/ocp4/openshift4 sha256:6e0bd5e5d9a381d591bc48a8207771fdac4789b3ca39059df9ef5683d98d37fb 20.47KiB
-uploading: mirror-rguske.disco.local:8443/ocp4/openshift4 sha256:8fc8f6ad463378c33a1b2afad988779243033992bb9e96a141c6fc489a0ec557 20.89KiB
-uploading: mirror-rguske.disco.local:8443/ocp4/openshift4 sha256:6b4d507808c23394c5bd4da59a6a3439c464df87474804493f0cf2e1842a8130 20.39KiB
-uploading: mirror-rguske.disco.local:8443/ocp4/openshift4 sha256:ecf55ce42cc35047982e925ed4abcc099c26590b77ca2142420215dfd9793c50 20.65KiB
-uploading: mirror-rguske.disco.local:8443/ocp4/openshift4 sha256:107c685af2958d2e0e8a6f11c64b269c43755ad121487b230fcb5c23a2f4ab56 17.74KiB
+TASK [mirror_appliance : Create init user] ***********************************************************************************************************************************************************************************************************************************************************************
+included: /runner/project/roles/mirror_appliance/tasks/create-init-user.yaml for rguske@rguske-rhel9-disco-bastion.rguske.coe.muc.redhat.com
+
+TASK [mirror_appliance : Creating init user at endpoint https://rguske-rhel9-disco-bastion.disco.local:8443/api/v1/user/initialize] ******************************************************************************************************************************************************************************
+ok: [rguske@rguske-rhel9-disco-bastion.rguske.coe.muc.redhat.com]
+
+TASK [mirror_appliance : Enable lingering for systemd user processes] ********************************************************************************************************************************************************************************************************************************************
+changed: [rguske@rguske-rhel9-disco-bastion.rguske.coe.muc.redhat.com]
+
+PLAY RECAP *******************************************************************************************************************************************************************************************************************************************************************************************************
+rguske@rguske-rhel9-disco-bastion.rguske.coe.muc.redhat.com : ok=49   changed=29   unreachable=0    failed=0    skipped=15   rescued=0    ignored=0
+
+INFO[2026-04-24 10:18:34] Quay installed successfully, config data is stored in /home/$USER/downloads/mirror-registry/root
+INFO[2026-04-24 10:18:34] Quay is available at https://rguske-rhel9-disco-bastion.disco.local:8443 with credentials (init, r3dh4t1!)
+```
+
+Alternative customizations examples:
+
+1.: `/mirror-registry install --quayHostname mirror.example.org --sslKey tls.key --targetHostname internal.mirror --quayRoot /var/mirror-registry --initPassword changeme`
+
+Source: [Mirror registry for Red Hat OpenShift flags](https://docs.redhat.com/en/documentation/openshift_container_platform/4.21/html/disconnected_environments/installing-mirroring-creating-registry).
+
+### Validating the installation
+
+Validating the endpoint using `curl`:
+
+```code
+curl -k https://rguske-rhel9-disco-bastion.disco.local:8443/health/instance
+{"data":{"services":{"auth":true,"database":true,"disk_space":true,"registry_gunicorn":true,"service_key":true,"web_gunicorn":true}},"status_code":200}
+```
+
+Checking the certificate:
+
+```code
+echo | openssl s_client -connect rguske-rhel9-disco-bastion.disco.local:8443 -showcerts
+Connecting to 192.168.69.208
+CONNECTED(00000003)
+depth=1 C=US, ST=VA, L=New York, O=Quay, OU=Division, CN=rguske-rhel9-disco-bastion.disco.local
+verify error:num=19:self-signed certificate in certificate chain
+verify return:1
+depth=1 C=US, ST=VA, L=New York, O=Quay, OU=Division, CN=rguske-rhel9-disco-bastion.disco.local
+verify return:1
+depth=0 CN=quay-enterprise
+verify return:1
+---
+Certificate chain
+ 0 s:CN=quay-enterprise
+   i:C=US, ST=VA, L=New York, O=Quay, OU=Division, CN=rguske-rhel9-disco-bastion.disco.local
+   a:PKEY: RSA, 2048 (bit); sigalg: sha256WithRSAEncryption
+   v:NotBefore: Apr 24 14:17:18 2026 GMT; NotAfter: Apr 15 14:17:18 2027 GMT
+-----BEGIN CERTIFICATE-----
 
 [...]
-sha256:d5fcfe5b11c4bf72e4948de4afd5c8b0e620a53bd2cd6d677236568a89de1d85 mirror-rguske.disco.local:8443/ocp4/openshift4:4.17.16-x86_64-multus-whereabouts-ipam-cni
-sha256:baad6dd23a869d025749b21ed7ef8175c08f1191fcd9e902358dfc357dfb0296 mirror-rguske.disco.local:8443/ocp4/openshift4:4.17.16-x86_64-installer-altinfra
-info: Mirroring completed in 11m20.7s (29.55MB/s)
 ```
 
-### Create the necessary section for the `install-config.yaml`
+Also, validate the certificate which we are going trust on our bastion host.
 
-Create the `ImageContentSourcePolicy` yaml file first:
-
+```code
+openssl x509 -in ~/downloads/mirror-registry/root/quay-config/ssl.cert -text -noout
+Certificate:
+    Data:
+        Version: 3 (0x2)
+        Serial Number:
+            16:06:dd:b0:be:99:47:81:76:52:85:9c:15:1e:76:0d:ab:99:35:ea
+        Signature Algorithm: sha256WithRSAEncryption
+        Issuer: C=US, ST=VA, L=New York, O=Quay, OU=Division, CN=rguske-rhel9-disco-bastion.disco.local
+        Validity
+            Not Before: Apr 24 14:17:18 2026 GMT
+            Not After : Apr 15 14:17:18 2027 GMT
+[...]
 ```
-cat <<EOF > icsp.yaml
-apiVersion: operator.openshift.io/v1alpha1
-kind: ImageContentSourcePolicy
-metadata:
-  name: example
-spec:
-  repositoryDigestMirrors:
-  - mirrors:
-    - mirror-rguske.disco.local:8443/ocp4/openshift4
-    source: quay.io/openshift-release-dev/ocp-release
-  - mirrors:
-    - mirror-rguske.disco.local:8443/ocp4/openshift4
-    source: quay.io/openshift-release-dev/ocp-v4.0-art-dev
+
+Systemd auto-start is also configured:
+
+```code
+sudo systemctl list-units --type service | grep quay
+  quay-app.service                                      loaded active running Quay Container
+  quay-pod.service                                      loaded active exited  Infra Container for Quay
+  quay-redis.service                                    loaded active running Redis Podman Container for Quay
+```
+
+### Login into the Mirror Registry
+
+```code
+podman login -u init -p 'r3dh4t1!' https://rguske-rhel9-disco-bastion.disco.local:8443 --tls-verify=false
+```
+
+It is also possible without using the option `--tls-verify=false` by trusting the newly created certificates which are stored in `root` / `quay-config`:
+
+```code
+tree
+.
+├── pause.tar
+├── quay.tar
+├── redis.tar
+└── root
+    ├── quay-config
+    │   ├── config.yaml
+    │   ├── openssl.cnf
+    │   ├── ssl.cert
+    │   ├── ssl.csr
+    │   └── ssl.key
+    └── quay-rootCA
+        ├── rootCA.key
+        ├── rootCA.pem
+        └── rootCA.srl
+```
+
+Copy the certs:
+
+`sudo cp ~/downloads/mirror-registry/root/quay-config/ssl.cert /etc/pki/ca-trust/source/anchors/`
+
+```code
+tree /etc/pki/ca-trust/source/anchors/
+└── ssl.cert
+
+0 directories, 1 file
+```
+
+Update the trust:
+
+`update-ca-trust`
+
+Logout:
+
+```code
+podman logout https://rguske-rhel9-disco-bastion.disco.local:8443
+
+Removed login credentials for rguske-rhel9-disco-bastion.disco.local:8443
+```
+
+Login again:
+
+```code
+podman login -u init -p 'r3dh4t1!' 'https://rguske-rhel9-disco-bastion.disco.local:8443'
+
+Login Succeeded!
+```
+
+### Uninstalling the Mirror Registry
+
+`mirror-registry uninstall`
+
+## Mirroring Images
+
+> You must have access to the internet to obtain the necessary container images. In this procedure, you place your mirror registry on a mirror host that has access to both your network and the internet. If you do not have access to a mirror host, use the [Mirroring Operator catalogs](https://docs.redhat.com/en/documentation/openshift_container_platform/4.17/html-single/disconnected_environments/index#olm-mirror-catalog_installing-mirroring-installation-images) for use with disconnected clusters procedure to copy images to a device you can move across network boundaries with.
+
+Procedure and prerequisites:
+
+- You configured a mirror registry to use in your disconnected environment.
+- You identified an image repository location on your mirror registry to mirror images into.
+- You provisioned a mirror registry account that allows images to be uploaded to that image repository.
+- You have write access to the mirror registry.
+
+Obtain your [pull secret from Red Hat OpenShift Cluster Manager](https://console.redhat.com/openshift/install/pull-secret) and paste the json content into $XDG_RUNTIME_DIR/containers/auth.json. Be careful! It must be in `json`.
+
+Make a copy of your pull secret in JSON format by running the following command:
+
+Paste the content in the file pull-scret. Then:
+
+`cat ./pull-secret | jq . > $(pwd)/pull-secret.json`
+
+Replace the existing `auth.json` file in $XDG_RUNTIME_DIR/containers/
+
+```code
+sudo mv pull-secret.json $XDG_RUNTIME_DIR/containers/auth.json
+```
+
+Next up is to generate the base64-encoded user name and password or token for your mirror registry by running the following command:
+
+`echo -n '<user_name>:<password>' | base64 -w0`
+
+For <user_name> and <password>, specify the user name and password that you configured for your registry.
+
+Example:
+
+`echo -n 'init:r3dh4t1!' | base64 -w0`
+
+Edit the JSON file and add a section that describes your registry to it:
+
+```json
+  "auths": {
+    "rguske-rhel9-disco-bastion.rguske.coe.muc.redhat.com:8443": {
+      "auth": "aW5pdDpyM2RoNHQxIQ==",
+      "email": "rguske@redhat.com"
+    },
+    "cloud.openshift.com": {
+
+[...]
+```
+
+## Creating the image set configuration
+
+Create an `ImageSetConfiguration` YAML file and modify it to include your required images.
+
+List the available Operator using e.g.:
+
+```code
+oc mirror list operators --catalogs --version=4.21 --v1
+```
+
+```yaml
+tee imagesetconfiguration.yaml > /dev/null <<'EOF'
+# oc mirror --v2 --config imageset-config.yaml   --workspace file://$(pwd)/oc-mirror-workspace/   docker://mirror-registry.disco.coe.muc.redhat.com:5000/disco
+kind: ImageSetConfiguration
+apiVersion: mirror.openshift.io/v2alpha1
+mirror:
+  platform:
+    channels:
+    - name: stable-4.21
+      type: ocp
+      shortestPath: true
+      minVersion: 4.21.10
+      # maxVersion: 4.21.9
+    graph: true
+  operators:
+  # oc mirror list operators --catalog registry.redhat.io/redhat/certified-operator-index:v4.21 --v1
+  - catalog: registry.redhat.io/redhat/redhat-operator-index:v4.21
+    packages:
+# Collection of channels
+#   for i in $(cat imageset-config.yaml | grep '^##' | tr -d '#' ); do echo $i; oc mirror list operators --catalog=registry.redhat.io/redhat/redhat-operator-index:v4.21 --package=${i/:*} ;  done
+#
+# Collection versions
+#   for i in $(cat imageset-config.yaml | grep '^##' | tr -d '#' ); do echo $i; oc mirror list operators --catalog=registry.redhat.io/redhat/redhat-operator-index:v4.21 --package=${i/:*} --channel=${i/*:};  done
+#
+## kernel-module-management:stable
+    - name: kernel-module-management
+      channels:
+      - name: stable
+        minVersion: '2.5.1'
+        # maxVersion: '1.15.0'
+## cincinnati-operator:v1
+    - name: cincinnati-operator
+      channels:
+      - name: v1
+        minVersion: '5.0.3'
+        # maxVersion: '5.0.3'
+## kubernetes-nmstate-operator:stable
+    - name: kubernetes-nmstate-operator
+      channels:
+      - name: 'stable'
+        minVersion: '4.21.0-202604080925'
+        # maxVersion: '4.17.0-202502120148'
+## kubevirt-hyperconverged:stable
+    - name: kubevirt-hyperconverged
+      channels:
+      - name: stable
+        minVersion: '4.21.3'
+        # maxVersion: '4.17.4'
+## metallb-operator:stable
+    - name: metallb-operator
+      channels:
+      - name: stable
+        minVersion: '4.21.0-202604140043'
+        # maxVersion: 'v4.17.0'
+## web-terminal:stable
+    - name: web-terminal
+      channels:
+      - name: fast
+        minVersion: '1.16.0'
+        # maxVersion: 'v1.15.0'
+  additionalImages:
+    - name: registry.redhat.io/ubi8/ubi:latest
+    - name: registry.redhat.io/rhel9/rhel-guest-image:latest
+    - name: quay.io/rhn_support_sreber/curl:latest
+    # Important for KMM & GPFS Build
+    - name: registry.redhat.io/ubi9/ubi-minimal:latest
+    - name: registry.redhat.io/ubi9/ubi@sha256:20f695d2a91352d4eaa25107535126727b5945bff38ed36a3e59590f495046f0
+    - name: quay.io/rguske/vddk@sha256:26d07e11f7f8dcca263e83a1d942fe9274c90418c5bfc17fad88b61ddabf95ed
+    - name: quay.io/rguske/simple-web-app@sha256:f1c474d0b214975d2fb95d14967b620daa0cdbef094ee509fec1659d55c3a6de
 EOF
 ```
 
-Export the required data as ENV variables:
+Ensure that clis are in your $PATH. Otherwise `export PATH=/usr/local/bin:$PATH`.
+
+The oc-mirror plugin v2 automatically generates the following custom resources:
+
+- `ImageDigestMirrorSet` (IDMS)
+Handles registry mirror rules when using image digest pull specifications. Generated if at least one image of the image set is mirrored by digest.
+- `ImageTagMirrorSet` (ITMS)
+Handles registry mirror rules when using image tag pull specifications. Generated if at least one image from the image set is mirrored by tag.
+- `CatalogSource`
+Retrieves information about the available Operators in the mirror registry. Used by Operator Lifecycle Manager (OLM) Classic.
+- `ClusterCatalog`
+Retrieves information about the available cluster extensions (which includes Operators) in the mirror registry. Used by OLM v1.
+- `UpdateService`
+Provides update graph data to the disconnected environment. Used by the OpenShift Update Service.
+
+Mirror the images from the specified image set configuration to the disk by running the following command:
 
 ```code
-export LOCAL_SECRET_JSON='/root/mirror/pull_secret.json' \
-export LOCAL_REGISTRY='mirror-rguske.disco.local:8443' \
-export LOCAL_REPOSITORY='ocp4/openshift4'
-export OCP_RELEASE='4.17.16' \
-export ARCHITECTURE='x86_64'
+oc mirror -c $(pwd)/openshift/imagesetconfiguration.yaml file://$(pwd) --v2
 ```
-
-To create the installation program `openshift-install` that is based on the content that you mirrored, extract it and pin it to the release:
-
-`oc adm release extract -a ${LOCAL_SECRET_JSON} --icsp-file=icsp.yaml --command=openshift-install "${LOCAL_REGISTRY}/${LOCAL_REPOSITORY}:${OCP_RELEASE}-${ARCHITECTURE}"`
-
-**Optional**: If you do not want to configure trust for the target registry, add the `--insecure=true` flag.
-
-The new `openshift-install` binary will be created. Validate the version and the `release image source`:
 
 ```code
-./openshift-install 4.17.16
-built from commit 4cc334a46aee0085de429f597b9ca97fb763eee9
-release image mirror-rguske.disco.local:8443/ocp4/openshift4@sha256:e0907823bc8989b02bb1bd55d5f08262dd0e4846173e792c14e7684fbd476c0d
-release architecture amd64
+oc-mirror -c $(pwd)/openshift/imagesetconfiguration.yaml file:///home/rguske/openshift/mirror --v2
 ```
 
-If the local disconnect registry is connected to the mirror host (bastion host in my case), run the following command:
+Result:
 
-`oc adm release extract -a ${LOCAL_SECRET_JSON} --command=openshift-install "${LOCAL_REGISTRY}/${LOCAL_REPOSITORY}:${OCP_RELEASE}-${ARCHITECTURE}"`
-
-The respective `imageContentSource` for the install-config.yaml would be:
-
-```yaml
-imageContentSources:
-- mirrors:
-  - mirror-rguske.disco.local:8443/ocp4/openshift4
-  source: quay.io/openshift-release-dev/ocp-release
-- mirrors:
-  - mirror-rguske.disco.local:8443/ocp4/openshift4
-  source: quay.io/openshift-release-dev/ocp-v4.0-art-dev
+```code
+2026/04/23 12:55:55  [INFO]   : === Results ===
+2026/04/23 12:55:55  [INFO]   :  ✓  193 / 193 release images mirrored successfully
+2026/04/23 12:55:55  [INFO]   :  ✓  95 / 95 operator images mirrored successfully
+2026/04/23 12:55:55  [INFO]   :  ✓  7 / 7 additional images mirrored successfully
+2026/04/23 12:55:55  [INFO]   : 📦 Preparing the tarball archive...
+2026/04/23 12:58:48  [INFO]   : mirror time     : 19m53.229903012s
+2026/04/23 12:58:48  [INFO]   : 👋 Goodbye, thank you for using oc-mirror
 ```
 
-## Cluster Preperations
+```code
+ls -ltr
+total 61212944
+drwxr-xr-x. 12 rguske rguske        4096 Apr 23 12:39 working-dir
+-rw-r--r--.  1 rguske rguske 62682043392 Apr 23 12:58 mirror_000001.tar
+```
+
+Upload to your mirror registry:
+
+```code
+oc mirror -c $(pwd)/imagesetconfiguration.yaml --from file://$(pwd)/mirror/ docker://rguske-rhel9-disco-bastion.disco.local:8443/disco --v2
+```
+
+Results:
+
+```code
+2026/04/24 11:34:43  [INFO]   : === Results ===
+2026/04/24 11:34:43  [INFO]   :  ✓  193 / 193 release images mirrored successfully
+2026/04/24 11:34:43  [INFO]   :  ✓  95 / 95 operator images mirrored successfully
+2026/04/24 11:34:43  [INFO]   :  ✓  7 / 7 additional images mirrored successfully
+2026/04/24 11:34:43  [INFO]   : 📄 Generating IDMS file...
+2026/04/24 11:34:43  [INFO]   : /home/rguske/openshift/mirror/working-dir/cluster-resources/idms-oc-mirror.yaml file created
+2026/04/24 11:34:43  [INFO]   : 📄 Generating ITMS file...
+2026/04/24 11:34:43  [INFO]   : /home/rguske/openshift/mirror/working-dir/cluster-resources/itms-oc-mirror.yaml file created
+2026/04/24 11:34:43  [INFO]   : 📄 Generating CatalogSource file...
+2026/04/24 11:34:43  [INFO]   : /home/rguske/openshift/mirror/working-dir/cluster-resources/cs-redhat-operator-index-v4-21.yaml file created
+2026/04/24 11:34:43  [INFO]   : 📄 Generating ClusterCatalog file...
+2026/04/24 11:34:43  [INFO]   : /home/rguske/openshift/mirror/working-dir/cluster-resources/cc-redhat-operator-index-v4-21.yaml file created
+2026/04/24 11:34:43  [INFO]   : 📄 Generating Signature Configmap...
+2026/04/24 11:34:43  [INFO]   : /home/rguske/openshift/mirror/working-dir/cluster-resources/signature-configmap.json file created
+2026/04/24 11:34:43  [INFO]   : /home/rguske/openshift/mirror/working-dir/cluster-resources/signature-configmap.yaml file created
+2026/04/24 11:34:43  [INFO]   : 📄 Generating UpdateService file...
+2026/04/24 11:34:43  [INFO]   : /home/rguske/openshift/mirror/working-dir/cluster-resources/updateService.yaml file created
+2026/04/24 11:34:43  [INFO]   : mirror time     : 50m26.676667165s
+2026/04/24 11:34:43  [INFO]   : 👋 Goodbye, thank you for using oc-mirror
+```
+
+## Installing a disconnected Cluster using the Agent Based Installer
+
+> When you use a disconnected mirror registry, you must add the certificate file that you created previously for your mirror registry to the additionalTrustBundle field of the install-config.yaml file.
+
+Workflow:
+
+- Create mirror registry content (oc mirror) ✅
+- Create installation assets (install-config.yaml)
+- Create the cluster
+- Apply mirror configuration to the new cluster
+
+### Cluster Preperations
 
 Network 192.168.69.0/24
 DNS: 192.168.69.6
@@ -922,37 +888,43 @@ Collecting the necessary nic information:
 
 | name  | nic | mac | ipv4 | comment |
 |---|---|---|---|---|
-| ocp-rguske-cp1  | ens33 | 00:50:56:88:d3:90 | 192.168.69.202  | Control Plane Node 1  |
-| ocp-rguske-cp2  | ens33 |  00:50:56:88:15:58 | 192.168.69.203  | Control Plane Node 2  |
-| ocp-rguske-cp3  | ens33 | 00:50:56:88:e6:aa | 192.168.69.204  | Control Plane Node 3  |
-| ocp-rguske-n1  | ens33 | 00:50:56:88:95:76 | 192.168.69.205  | Worker Node 1  |
-| ocp-rguske-n2  | ens33 | 00:50:56:88:33:1a | 192.168.69.206  | Worker Node 2  |
+| rguske-ocp42-disco-1  | enp1s0 | 02:d8:6d:0f:3e:dc | 192.168.69.202  | Node 1  |
+| rguske-ocp42-disco-2  | enp1s0 |  02:d8:6d:0f:3e:dd | 192.168.69.203  | Node 2  |
+| rguske-ocp42-disco-3  | enp1s0 | 02:d8:6d:0f:3e:de | 192.168.69.204  | Node 3  |
 
 BaseDomain: disco.local
 
 ## Configurations
 
-`agent-config.yaml`
+Create the `agent-config.yaml as well as the install-config.yaml`
+
+```code
+tree rguske-ocp42-disco/
+rguske-ocp42-disco/
+└── conf
+    ├── agent-config.yaml
+    └── install-config.yaml
+```
 
 ```yaml
 cat > agent-config.yaml << EOF
 apiVersion: v1beta1
 kind: AgentConfig
 metadata:
-  name: ocp1
+  name: rguske-ocp42-disco
 rendezvousIP: 192.168.69.202
 hosts:
-  - hostname: ocp-rguske-cp1.disco.local
+  - hostname: rguske-ocp42-disco-1.disco.local
     role: master
     interfaces:
-      - name: ens33
-        macAddress: 00:50:56:88:d3:90
+      - name: enp1s0
+        macAddress: 02:d8:6d:0f:3e:dc
     networkConfig:
       interfaces:
-        - name: ens33
+        - name: enp1s0
           type: ethernet
           state: up
-          mac-address: 00:50:56:88:d3:90
+          mac-address: 02:d8:6d:0f:3e:dc
           ipv4:
             enabled: true
             address:
@@ -967,19 +939,19 @@ hosts:
         config:
           - destination: 0.0.0.0/0
             next-hop-address: 192.168.69.254
-            next-hop-interface: ens33
+            next-hop-interface: enp1s0
             table-id: 254
-  - hostname: ocp-rguske-cp2.disco.local
+  - hostname: rguske-ocp42-disco-2.disco.local
     role: master
     interfaces:
-      - name: ens33
-        macAddress: 00:50:56:88:15:58
+      - name: enp1s0
+        macAddress: 02:d8:6d:0f:3e:dd
     networkConfig:
       interfaces:
-        - name: ens33
+        - name: enp1s0
           type: ethernet
           state: up
-          mac-address: 00:50:56:88:15:58
+          mac-address: 02:d8:6d:0f:3e:dd
           ipv4:
             enabled: true
             address:
@@ -994,19 +966,19 @@ hosts:
         config:
           - destination: 0.0.0.0/0
             next-hop-address: 192.168.69.254
-            next-hop-interface: ens33
+            next-hop-interface: enp1s0
             table-id: 254
-  - hostname: ocp-rguske-cp3.disco.local
+  - hostname: rguske-ocp42-disco-2.disco.local
     role: master
     interfaces:
-      - name: ens33
-        macAddress: 00:50:56:88:e6:aa
+      - name: enp1s0
+        macAddress: 02:d8:6d:0f:3e:de
     networkConfig:
       interfaces:
-        - name: ens33
+        - name: enp1s0
           type: ethernet
           state: up
-          mac-address: 00:50:56:88:e6:aa
+          mac-address: 02:d8:6d:0f:3e:de
           ipv4:
             enabled: true
             address:
@@ -1021,96 +993,56 @@ hosts:
         config:
           - destination: 0.0.0.0/0
             next-hop-address: 192.168.69.254
-            next-hop-interface: ens33
-            table-id: 254
-  - hostname: ocp-rguske-n1.disco.local
-    role: worker
-    interfaces:
-      - name: ens33
-        macAddress: 00:50:56:88:95:76
-    networkConfig:
-      interfaces:
-        - name: ens33
-          type: ethernet
-          state: up
-          mac-address: 00:50:56:88:95:76
-          ipv4:
-            enabled: true
-            address:
-              - ip: 192.168.69.205
-                prefix-length: 24
-            dhcp: false
-      dns-resolver:
-        config:
-          server:
-            - 192.168.69.6
-      routes:
-        config:
-          - destination: 0.0.0.0/0
-            next-hop-address: 192.168.69.254
-            next-hop-interface: ens33
-            table-id: 254
-  - hostname: ocp-rguske-n2.disco.local
-    role: worker
-    interfaces:
-      - name: ens33
-        macAddress: 00:50:56:88:33:1a
-    networkConfig:
-      interfaces:
-        - name: ens33
-          type: ethernet
-          state: up
-          mac-address: 00:50:56:88:33:1a
-          ipv4:
-            enabled: true
-            address:
-              - ip: 192.168.69.206
-                prefix-length: 24
-            dhcp: false
-      dns-resolver:
-        config:
-          server:
-            - 192.168.69.6
-      routes:
-        config:
-          - destination: 0.0.0.0/0
-            next-hop-address: 192.168.69.254
-            next-hop-interface: ens33
+            next-hop-interface: enp1s0
             table-id: 254
 EOF
 ```
 
-The ssl certificate of the mirror-registry can be found in `root/quay-rootCA/`
+The ssl certificate of the mirror-registry which will be used in the `install-config.yaml` can be found within the `mirror-registry/root/quay-rootCA` folder. Example: `/home/rguske/downloads/mirror-registry/root/quay-rootCA`
 
-`install-config.yaml`
+```json
+{
+  "auths": {
+    "rguske-rhel9-disco-bastion.rguske.coe.muc.redhat.com:8443": {
+      "auth": "aW5pdDpyM2RoNHQxIQ==",
+      "email": "rguske@redhat.com"
+    }
+  }
+}
+```
 
 ```yaml
 cat > install-config.yaml << EOF
 apiVersion: v1
 baseDomain: disco.local
-imageContentSources:
+ImageDigestSources:
 - mirrors:
-  - mirror-rguske.disco.local:8443/ocp4/openshift4
-  source: quay.io/openshift-release-dev/ocp-release
-- mirrors:
-  - mirror-rguske.disco.local:8443/ocp4/openshift4
+  - rguske-rhel9-disco-bastion.disco.local:8443/disco/openshift/release
   source: quay.io/openshift-release-dev/ocp-v4.0-art-dev
+- mirrors:
+  - rguske-rhel9-disco-bastion.disco.local:8443/disco/openshift/release-images
+  source: quay.io/openshift-release-dev/ocp-release
 additionalTrustBundle: |
   -----BEGIN CERTIFICATE-----
-  MIID8TCCAtmgAwIBAgIUVsPTvuXKjOFvHZcpjR8FG4++zzcwDQYJKoZIhvcNAQEL
-  BQAwczELMAkGA1UEBhMCVVMxCzAJBgNVBAgMAlZBMREwDwYDVQQHDAhOZXcgWW9y
-
+  MIIEHDCCAwSgAwIBAgIUFY/Z+WmgJ+8SIREIa3Cl3FRj9jYwDQYJKoZIhvcNAQEL
+  BQAwgYAxCzAJBgNVBAYTAlVTMQswCQYDVQQIDAJWQTERMA8GA1UEBwwITmV3IFlv
+  cmsxDTALBgNVBAoMBFF1YXkxETAPBgNVBAsMCERpdmlzaW9uMS8wLQYDVQQDDCZy
+  Z3Vza2UtcmhlbDktZGlzY28tYmFzdGlvbi5kaXNjby5sb2NhbDAeFw0yNjA0MjQx
+  NDE3MTZaFw0yOTAyMTExNDE3MTZaMIGAMQswCQYDVQQGEwJVUzELMAkGA1UECAwC
+  VkExETAPBgNVBAcMCE5ldyBZb3JrMQ0wCwYDVQQKDARRdWF5MREwDwYDVQQLDAhE
   ...
-  571UOK0=
+
+  n7iB3Rs8P16UvuFB2LfWmyNfuu21InZhXLmJ+rZJc0qnpq6Rm8iXAq0n8L5ycCHc
+  gPt4JJQZJ8JP6bSREgAhqfNSngfLj73O1+S2fuN7i3mCQEv0UajEhQgHQtcZ6r1C
   -----END CERTIFICATE-----
 compute:
 - name: worker
-  replicas: 2
+  replicas: 0
 controlPlane:
   name: master
   replicas: 3
 metadata:
-  name: ocp-rguske
+  name: rguske-ocp42-disco
 networking:
   clusterNetwork:
     - cidr: 10.128.0.0/14
@@ -1129,59 +1061,98 @@ platform:
 fips: false
 pullSecret: '{
   "auths": {
-    "mirror-rguske.disco.local:8443": {
-      "auth": "QxIQ==",
-      "email": "rgu"
-    },
-    "cloud.openshift.com": {
-      "auth": "b3BlbnNoaWZ0LXJlbGVhc2Ut...ZPVjIzMFkyQlFHMzRSTVJQVzc4UUtSUU1XTDJRMUIxS0YxTUZJUE45UldaT1VNTQ==",
-      "email": "rguske@redhat.com"
-    },
-    "quay.io": {
-      "auth": "b3BlbnNoaWZ0LXJlbGVhc2Ut...MFkyQlFHMzRSTVJQVzc4UUtSUU1XTDJRMUIxS0YxTUZJUE45UldaT1VNTQ==",
-      "email": "rguske@redhat.com"
-    },
-    "registry.connect.redhat.com": {
-      "auth": "fHVoYy1wb29sLWY...HNVNE0xYVJka1ppNFM0TFhMbVhNdC0xRFkwOGxNTS1qWXlEQnV4Y3l0NXNnYUtJdWxPSklWbWNzX3FOV2hYV3VqWXgzU1JOajRCVEVEYjJtZGZLRjFVS2ZTLV9BWnRxN0d6X2c5Qzl3ZzFHVFE0VlJDMldTaF9Oa2RHb01GcmFuS29SSWE5OGNBcTdaV3cwRDlMZEo1Z1FHSTNXMEx2M2dQYXA0elNZdUpfMXpoY0FqZ1hwY3ZISFV0am9FOUFKemZaS0tCNEllUQ==",
-      "email": "rguske@redhat.com"
-    },
-    "registry.redhat.io": {
-      "auth": "fHVoYy1wb29sLWY2Y2IzMjg1LTY5ZDUtNDAyMC05ODlkLTllYTQ5Y2JlY2RmZDpleUpoYkdjaU9pSlNVelV4TWlKOS5leUp6ZFdJaU9pSmlOakV5WWpSbFpHWTFORFEwTkROa09XTTNOVEU1W...M0TFhMbVhNdC0xRFkwOGxNTS1qWXlEQnV4Y3l0NXNnYUtJdWxPSklWbWNzX3FOV2hYV3VqWXgzU1JOajRCVEVEYjJtZGZLRjFVS2ZTLV9BWnRxN0d6X2c5Qzl3ZzFHVFE0VlJDMldTaF9Oa2RHb01GcmFuS29SSWE5OGNBcTdaV3cwRDlMZEo1Z1FHSTNXMEx2M2dQYXA0elNZdUpfMXpoY0FqZ1hwY3ZISFV0am9FOUFKemZaS0tCNEllUQ==",
+    "rguske-rhel9-disco-bastion.disco.local:8443": {
+      "auth": "aW5pdDpyM2RoNHQxIQ==",
       "email": "rguske@redhat.com"
     }
   }
 }'
-sshKey: 'ssh-ed25519 AAAAC3NzaC1...XkmlQHba root@mirror-rguske.disco.local'
+sshKey: 'ssh-ed25519 AAAAC3NzaC1...Q/Ur5Ek0v9gF rguske@rguske-rhel9-disco-bastion.rguske.coe.muc.redhat.com'
 EOF
 ```
 
-## Create Agent iso
+Create a new `openshift-install-fips` binary which only points to your mirror-registry.
 
-`mkdir conf`
+```code
+export LOCAL_SECRET_JSON='/home/rguske/openshift/new-pull-secret.json' \
+export LOCAL_REGISTRY='rguske-rhel9-disco-bastion.disco.local:8443' \
+export LOCAL_REPOSITORY='disco/openshift/release-images' \
+export OCP_RELEASE='4.21.10' \
+export ARCHITECTURE='x86_64'
+```
+
+```code
+oc adm release extract -a ${LOCAL_SECRET_JSON} --idms-file=/home/rguske/openshift/mirror/working-dir/cluster-resources/idms-oc-mirror.yaml --command=openshift-install-fips "${LOCAL_REGISTRY}/${LOCAL_REPOSITORY}:${OCP_RELEASE}-${ARCHITECTURE}"
+```
+
+```code
+tree -L 1
+.
+├── downloads
+├── oc-mirror-web-app
+├── openshift
+└── openshift-install-fips
+```
+
+Validate it:
+
+```code
+./openshift-install-fips version
+./openshift-install-fips 4.21.10
+built from commit 6285755d199e7aa7bf29db5fe6964ce7f3684ed9
+release image rguske-rhel9-disco-bastion.disco.local:8443/disco/openshift/release-images@sha256:5d591a70c92a6dfa3b6b948ffe5e5eac7ab339c49005744006aa0dd9d6d98898
+Release Image Architecture is unknown
+release architecture unknown
+default architecture amd64
+```
+
+This binary will be used for the creation of the agent.iso.
+
+## Create Agent iso
 
 Create the install-config.yaml and agent-install.yaml file.
 
-Run `openshift-install agent create image --dir conf/`
+Run `./openshift-install-fips agent create image --dir /home/rguske/openshift/rguske-ocp42-disco/conf/`
 
-Example output:
+Example output :
 
 ```code
-[rguske@bastion-rguske mirror-registry]$ openshift-install agent create image --dir conf/
-WARNING imageContentSources is deprecated, please use ImageDigestSources
-INFO Configuration has 3 master replicas and 2 worker replicas
+INFO Configuration has 3 master replicas, 0 arbiter replicas, and 0 worker replicas
+WARNING The imageDigestSources configuration in install-config.yaml should have at least one source field matching the releaseImage value rguske-rhel9-disco-bastion.disco.local:8443/disco/openshift/release-images@sha256:5d591a70c92a6dfa3b6b948ffe5e5eac7ab339c49005744006aa0dd9d6d98898
 INFO The rendezvous host IP (node0 IP) is 192.168.69.202
 INFO Extracting base ISO from release payload
 INFO Base ISO obtained from release and cached at [/home/rguske/.cache/agent/image_cache/coreos-x86_64.iso]
 INFO Consuming Install Config from target directory
 INFO Consuming Agent Config from target directory
-INFO Generated ISO at conf/agent.x86_64.iso.
+INFO Generated ISO at /home/rguske/openshift/rguske-ocp42-disco/conf/agent.x86_64.iso.
+```
+
+If you still have problemes with the release-image reference use:
+
+```code
+export OPENSHIFT_INSTALL_RELEASE_IMAGE_OVERRIDE='rguske-rhel9-disco-bastion.rguske.coe.muc.redhat.com:8443/disco/openshift/release-images@sha256:5d591a70c92a6dfa3b6b948ffe5e5eac7ab339c49005744006aa0dd9d6d98898'
 ```
 
 Mount the `agent.x86_64.iso` on the machines (BM or VM).
 
+If you're running the bastion host on e.g. OpenShift Virtualization, you can use the following command in order to upload the ise to a pvc:
+
+```code
+VERSION=$(curl -s https://api.github.com/repos/kubevirt/kubevirt/releases/latest | grep tag_name | cut -d '"' -f 4)
+curl -L -o virtctl https://github.com/kubevirt/kubevirt/releases/download/$VERSION/virtctl-$VERSION-linux-amd64
+chmod +x virtctl
+sudo mv virtctl /usr/local/bin/
+```
+
+Login into your existing OpenShift cluster, change into your project and upload the iso:
+
+```code
+virtctl image-upload pvc rguskeagentiso-disco --size 2Gi --storage-class coe-netapp-nas --access-mode ReadWriteMany --image-path ~/openshift/rguske-ocp42-disco/conf/agent.x86_64.iso --insecure
+```
+
 Boot the machines and wait until the installation is done.
 
-Validate the installer progress using `openshift-install wait-for install-complete --dir conf/`
+Validate the installer progress using `./openshift-install-fips wait-for install-complete --dir /home/rguske/openshift/rguske-ocp42-disco/conf/`
 
 ## Run a `httpd` webserver on the bastion to share the iso
 
@@ -1206,7 +1177,7 @@ curl -I http://localhost
 sudo tail -f /var/log/httpd/error_log
 ```
 
-Copy (`scp agent.x86_64.iso root@192.168.69.208:/root/download/`) the agent.iso from the mirror registry to the bastion host which has access to the target (ESXi server for example). 
+Copy (`scp agent.x86_64.iso root@192.168.69.208:/root/download/`) the agent.iso from the mirror registry to the bastion host which has access to the target (ESXi server for example).
 
 Copy the created iso into `/var/www/html/` on the bastion host.
 
