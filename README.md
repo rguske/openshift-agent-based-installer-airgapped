@@ -13,7 +13,7 @@ Source: [Understanding disconnected installation mirroring](https://docs.redhat.
   - [Bastion Host Preperation](#bastion-host-preperation)
     - [Hostname](#hostname)
     - [RHEL Subscription Manager](#rhel-subscription-manager)
-    - [Networking](#networking)
+    - [Networking Bastion-Host](#networking-bastion-host)
     - [SSH](#ssh)
     - [Command Line Interfaces (CLIs)](#command-line-interfaces-clis)
     - [Install Podman and Nmstate](#install-podman-and-nmstate)
@@ -30,9 +30,12 @@ Source: [Understanding disconnected installation mirroring](https://docs.redhat.
   - [Configurations](#configurations)
   - [Create Agent iso](#create-agent-iso)
   - [Run a `httpd` webserver on the bastion to share the iso](#run-a-httpd-webserver-on-the-bastion-to-share-the-iso)
+  - [Using Operator Lifecycle Manager in disconnected environments](#using-operator-lifecycle-manager-in-disconnected-environments)
   - [Troubleshooting](#troubleshooting)
-    - [Networking](#networking-1)
+    - [Networking](#networking)
     - [Logs](#logs)
+    - [Cluster Status validations](#cluster-status-validations)
+    - [Firewall is blocking images from pulling](#firewall-is-blocking-images-from-pulling)
 
 ---
 
@@ -69,7 +72,7 @@ Configure RHEL Subscription Manager:
 
 `sudo subscription-manager register --username --password '' --auto-attach`
 
-### Networking
+### Networking Bastion-Host
 
 Setup a Bastion Host with two nics. One is connected to the "internet-zone" and the other one to the disconnected network.
 
@@ -783,6 +786,11 @@ mirror:
       - name: fast
         minVersion: '1.16.0'
         # maxVersion: 'v1.15.0'
+## web-terminal relies on devworkspace-operator
+    - name: devworkspace-operator
+      channels:
+      - name: fast
+        minVersion: '0.40-1776457293'
   additionalImages:
     - name: registry.redhat.io/ubi8/ubi:latest
     - name: registry.redhat.io/rhel9/rhel-guest-image:latest
@@ -792,6 +800,9 @@ mirror:
     - name: registry.redhat.io/ubi9/ubi@sha256:20f695d2a91352d4eaa25107535126727b5945bff38ed36a3e59590f495046f0
     - name: quay.io/rguske/vddk@sha256:26d07e11f7f8dcca263e83a1d942fe9274c90418c5bfc17fad88b61ddabf95ed
     - name: quay.io/rguske/simple-web-app@sha256:f1c474d0b214975d2fb95d14967b620daa0cdbef094ee509fec1659d55c3a6de
+    # Virtualization Images
+    - name: quay.io/containerdisks/centos-stream:9
+    - name: quay.io/containerdisks/fedora:latest
 EOF
 ```
 
@@ -1195,6 +1206,41 @@ saving to 'agent.x86_64.iso'
 agent.x86_64.iso      21%  ********************************************   |  261M  0:00:10 ETA
 ```
 
+![disco-cluster-operator](assets/disco-cluster-operators.png)
+
+## Using Operator Lifecycle Manager in disconnected environments
+
+Docs: [Using Operator Lifecycle Manager in disconnected environments](https://docs.redhat.com/en/documentation/openshift_container_platform/4.21/html/disconnected_environments/olm-restricted-networks)
+
+Disable the sources for the default catalogs by adding disableAllDefaultSources: true to the OperatorHub object:
+
+```code
+oc patch OperatorHub cluster --type json \
+    -p '[{"op": "add", "path": "/spec/disableAllDefaultSources", "value": true}]'
+```
+
+Create a CatalogSource object that references your index image.
+
+```yaml
+oc create -f - <<EOF
+apiVersion: operators.coreos.com/v1alpha1
+kind: CatalogSource
+metadata:
+  name: my-operator-catalog
+  namespace: openshift-marketplace
+spec:
+  sourceType: grpc
+  grpcPodConfig:
+    securityContextConfig: legacy
+  image: rguske-rhel9-disco-bastion.disco.local:8443/disco/redhat/redhat-operator-index:v4.21
+  displayName: My Operator Catalog
+  publisher: rguske-disco-lab
+  updateStrategy:
+    registryPoll:
+      interval: 30m
+EOF
+```
+
 ## Troubleshooting
 
 Typical disconnected blockers in OpenShift agent-based installs are:
@@ -1260,6 +1306,10 @@ PING rguske-ocp42-disco-3.disco.local (192.168.69.204) 56(84) bytes of data.
 Logs:
 
 On the Rendevouz host run `journalctl assisted-service.service -f`
+
+On the worker nodes run `journalctl -b -f -u release-image.service -u bootkube.service -u node-image-pull.service -f`
+
+### Cluster Status validations
 
 Inspect cluster validation status directly.
 
@@ -1442,3 +1492,39 @@ Hostname rguske-ocp42-disco-2.disco.local is not unique in cluster
 ```
 
 If the discovery was successful, run: `journalctl -b -f -u release-image.service -u bootkube.service -u node-image-pull.service -f`
+
+### Firewall is blocking images from pulling
+
+I faced the issue that my disconnected cluster couldn't pull images from my mirror registry anymore. Basic from one of the nodes checks:
+
+```code
+nc -vz rguske-rhel9-disco-bastion.disco.local 8443
+```
+
+```code
+curl -vk https://rguske-rhel9-disco-bastion.disco.local:8443/v2/
+```
+
+On the mirror registry host:
+
+```code
+sudo ss -tulpn | grep 8443
+```
+
+```code
+sudo firewall-cmd --list-all
+```
+
+```code
+sudo firewall-cmd --permanent --add-port=8443/tcp
+sudo firewall-cmd --reload
+```
+
+Opening port 8443 again helped:
+
+```code
+nc -vz rguske-rhel9-disco-bastion.disco.local 8443
+Ncat: Version 7.92 ( https://nmap.org/ncat )
+Ncat: Connected to 192.168.69.208:8443.
+Ncat: 0 bytes sent, 0 bytes received in 0.02 seconds.
+```
