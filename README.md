@@ -30,6 +30,9 @@ Source: [Understanding disconnected installation mirroring](https://docs.redhat.
   - [Configurations](#configurations)
   - [Create Agent iso](#create-agent-iso)
   - [Run a `httpd` webserver on the bastion to share the iso](#run-a-httpd-webserver-on-the-bastion-to-share-the-iso)
+  - [Troubleshooting](#troubleshooting)
+    - [Networking](#networking-1)
+    - [Logs](#logs)
 
 ---
 
@@ -968,7 +971,7 @@ hosts:
             next-hop-address: 192.168.69.254
             next-hop-interface: enp1s0
             table-id: 254
-  - hostname: rguske-ocp42-disco-2.disco.local
+  - hostname: rguske-ocp42-disco-3.disco.local
     role: master
     interfaces:
       - name: enp1s0
@@ -1029,9 +1032,9 @@ additionalTrustBundle: |
   cmsxDTALBgNVBAoMBFF1YXkxETAPBgNVBAsMCERpdmlzaW9uMS8wLQYDVQQDDCZy
   Z3Vza2UtcmhlbDktZGlzY28tYmFzdGlvbi5kaXNjby5sb2NhbDAeFw0yNjA0MjQx
   NDE3MTZaFw0yOTAyMTExNDE3MTZaMIGAMQswCQYDVQQGEwJVUzELMAkGA1UECAwC
-  VkExETAPBgNVBAcMCE5ldyBZb3JrMQ0wCwYDVQQKDARRdWF5MREwDwYDVQQLDAhE
-  ...
-
+...
+  ZyYMLJyR83M5sD7sVbbuSOkYgNt20ZdIcqigIkyABRkqcahC7kOypXXJbhkj3fYL
+  kyGukgbJRF96hCB9oO8bW3evact/P40arsjHT6qKRIZf0kKm7CYUVRjI4+jlz+oV
   n7iB3Rs8P16UvuFB2LfWmyNfuu21InZhXLmJ+rZJc0qnpq6Rm8iXAq0n8L5ycCHc
   gPt4JJQZJ8JP6bSREgAhqfNSngfLj73O1+S2fuN7i3mCQEv0UajEhQgHQtcZ6r1C
   -----END CERTIFICATE-----
@@ -1067,7 +1070,7 @@ pullSecret: '{
     }
   }
 }'
-sshKey: 'ssh-ed25519 AAAAC3NzaC1...Q/Ur5Ek0v9gF rguske@rguske-rhel9-disco-bastion.rguske.coe.muc.redhat.com'
+sshKey: 'ssh-ed25519 AAAAC3NzaC1lZ...VzGQ/Ur5Ek0v9gF rguske@rguske-rhel9-disco-bastion.rguske.coe.muc.redhat.com'
 EOF
 ```
 
@@ -1152,7 +1155,7 @@ virtctl image-upload pvc rguskeagentiso-disco --size 2Gi --storage-class coe-net
 
 Boot the machines and wait until the installation is done.
 
-Validate the installer progress using `./openshift-install-fips wait-for install-complete --dir /home/rguske/openshift/rguske-ocp42-disco/conf/`
+Validate the installer progress using `./openshift-install-fips wait-for install-complete --dir /home/rguske/openshift/rguske-ocp42-disco/conf/ --log-level=debug`
 
 ## Run a `httpd` webserver on the bastion to share the iso
 
@@ -1191,3 +1194,251 @@ Connecting to bastion-rguske.rguske.coe.muc.redhat.com (10.32.96.138:80)
 saving to 'agent.x86_64.iso'
 agent.x86_64.iso      21%  ********************************************   |  261M  0:00:10 ETA
 ```
+
+## Troubleshooting
+
+Typical disconnected blockers in OpenShift agent-based installs are:
+
+- release image not mirrored correctly
+- OS image URL inaccessible
+- missing release signatures
+- mirrored registry CA not trusted
+- incorrect imageContentSources / ImageDigestMirrorSet
+- registry auth not included in pull secret
+- missing boot artifacts in disconnected cache
+- cluster never transitions from insufficient → ready
+
+### Networking
+
+`ssh -i ~/.ssh/id_ed25519 core@rguske-ocp42-disco-2.disco.local`
+
+DNS:
+
+```code
+[core@rguske-ocp42-disco-1 ~]$ dig +short rguske-ocp42-disco-2.disco.local
+192.168.69.203
+[core@rguske-ocp42-disco-1 ~]$ dig +short rguske-ocp42-disco-1.disco.local
+192.168.69.202
+[core@rguske-ocp42-disco-1 ~]$ dig +short rguske-ocp42-disco-3.disco.local
+192.168.69.204
+[core@rguske-ocp42-disco-1 ~]$ dig +short api.rguske-ocp42-disco.disco.local
+192.168.69.200
+[core@rguske-ocp42-disco-1 ~]$ dig +short console.apps.rguske-ocp42-disco.disco.local
+192.168.69.201
+```
+
+Ping:
+
+```code
+[core@rguske-ocp42-disco-2 ~]$ ping -c 3 rguske-ocp42-disco-1
+PING rguske-ocp42-disco-1.disco.local (192.168.69.202) 56(84) bytes of data.
+64 bytes from rguske-ocp42-disco-1.disco.local (192.168.69.202): icmp_seq=1 ttl=64 time=0.311 ms
+64 bytes from rguske-ocp42-disco-1.disco.local (192.168.69.202): icmp_seq=2 ttl=64 time=0.435 ms
+64 bytes from rguske-ocp42-disco-1.disco.local (192.168.69.202): icmp_seq=3 ttl=64 time=0.341 ms
+
+--- rguske-ocp42-disco-1.disco.local ping statistics ---
+3 packets transmitted, 3 received, 0% packet loss, time 2003ms
+rtt min/avg/max/mdev = 0.311/0.362/0.435/0.052 ms
+[core@rguske-ocp42-disco-2 ~]$ ping -c 3 rguske-ocp42-disco-2
+PING rguske-ocp42-disco-2.disco.local (192.168.69.203) 56(84) bytes of data.
+64 bytes from rguske-ocp42-disco-2.disco.local (192.168.69.203): icmp_seq=1 ttl=64 time=0.052 ms
+64 bytes from rguske-ocp42-disco-2.disco.local (192.168.69.203): icmp_seq=2 ttl=64 time=0.103 ms
+64 bytes from rguske-ocp42-disco-2.disco.local (192.168.69.203): icmp_seq=3 ttl=64 time=0.082 ms
+
+--- rguske-ocp42-disco-2.disco.local ping statistics ---
+3 packets transmitted, 3 received, 0% packet loss, time 2027ms
+rtt min/avg/max/mdev = 0.052/0.079/0.103/0.020 ms
+[core@rguske-ocp42-disco-2 ~]$ ping -c 3 rguske-ocp42-disco-3
+PING rguske-ocp42-disco-3.disco.local (192.168.69.204) 56(84) bytes of data.
+64 bytes from rguske-ocp42-disco-3.disco.local (192.168.69.204): icmp_seq=1 ttl=64 time=0.360 ms
+64 bytes from rguske-ocp42-disco-3.disco.local (192.168.69.204): icmp_seq=2 ttl=64 time=1.24 ms
+64 bytes from rguske-ocp42-disco-3.disco.local (192.168.69.204): icmp_seq=3 ttl=64 time=1.25 ms
+```
+
+### Logs
+
+Logs:
+
+On the Rendevouz host run `journalctl assisted-service.service -f`
+
+Inspect cluster validation status directly.
+
+```code
+curl -s http://localhost:8090/api/assisted-install/v2/clusters | jq
+```
+
+Authorization failed:
+
+```code
+{ "code": 401, "message": "unauthenticated for invalid credentials" }
+```
+
+The assisted-service API is protected, so the unauthenticated response is expected.
+
+Obtain the token:
+
+```code
+podman inspect 580  | jq '.[0].Config.Env' | grep USER_AUTH_TOKEN
+  "USER_AUTH_TOKEN=eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9.eyJhdXRoX3NjaGVtZSI6InVzZXJBdXRoIn0.wRT3yMr-KJIdgEwAuS8c0WxfnDngsjyNgXnBo9TSorZPeuEp6S0W5q_wH2JOFQ1DwtPZBRY3UKEswjgXEJSbrQ",
+```
+
+Check the cluster status:
+
+```code
+TOKEN="eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9.eyJhdXRoX3NjaGVtZSI6InVzZXJBdXRoIn0.wRT3yMr-KJIdgEwAuS8c0WxfnDngsjyNgXnBo9TSorZPeuEp6S0W5q_wH2JOFQ1DwtPZBRY3UKEswjgXEJSbrQ"
+
+curl -s \
+  -H "Authorization: $TOKEN" \
+  http://localhost:8090/api/assisted-install/v2/clusters | jq
+```
+
+The status summary:
+
+```json
+[
+  {
+    "api_vips": [
+      {
+        "cluster_id": "ceeb9d66-c894-4224-adcc-72283fd213f4",
+        "ip": "192.168.69.200",
+        "verification": "succeeded"
+      }
+    ],
+    "base_dns_domain": "disco.local",
+    "cluster_networks": [
+      {
+        "cidr": "10.128.0.0/14",
+        "cluster_id": "ceeb9d66-c894-4224-adcc-72283fd213f4",
+        "host_prefix": 23
+      }
+    ],
+    "connectivity_majority_groups": "{\"majority_groups\":{\"192.168.69.0/24\":[\"35ddb3ef-1234-5220-b32c-331d1cb817a3\",\"96f0818e-1d12-5a86-ab09-ddaacf305552\",\"9bda5859-ae9b-5c6f-87ac-8904cc41b857\"],\"IPv4\":[\"35ddb3ef-1234-5220-b32c-331d1cb817a3\",\"96f0818e-1d12-5a86-ab09-ddaacf305552\",\"9bda5859-ae9b-5c6f-87ac-8904cc41b857\"],\"IPv6\":[]},\"l3_connected_addresses\":{\"35ddb3ef-1234-5220-b32c-331d1cb817a3\":[\"192.168.69.203\"],\"96f0818e-1d12-5a86-ab09-ddaacf305552\":[\"192.168.69.204\"],\"9bda5859-ae9b-5c6f-87ac-8904cc41b857\":[\"192.168.69.202\"]}}",
+    "control_plane_count": 3,
+    "controller_logs_collected_at": "0001-01-01T00:00:00.000Z",
+    "controller_logs_started_at": "0001-01-01T00:00:00.000Z",
+    "cpu_architecture": "x86_64",
+    "created_at": "2026-04-27T06:55:16.101392Z",
+    "deleted_at": null,
+    "disk_encryption": {
+      "enable_on": "none",
+      "mode": "tpmv2"
+    },
+    "email_domain": "Unknown",
+    "enabled_host_count": 3,
+    "feature_usage": "{\"Hyperthreading\":{\"data\":{\"hyperthreading_enabled\":\"all\"},\"id\":\"HYPERTHREADING\",\"name\":\"Hyperthreading\"},\"OVN network type\":{\"id\":\"OVN_NETWORK_TYPE\",\"name\":\"OVN network type\"},\"Static Network Config\":{\"id\":\"STATIC_NETWORK_CONFIG\",\"name\":\"Static Network Config\"}}",
+    "high_availability_mode": "Full",
+    "host_networks": null,
+    "hosts": [],
+    "href": "/api/assisted-install/v2/clusters/ceeb9d66-c894-4224-adcc-72283fd213f4",
+    "hyperthreading": "all",
+    "id": "ceeb9d66-c894-4224-adcc-72283fd213f4",
+    "ignition_endpoint": {},
+    "image_info": {
+      "created_at": "2026-04-27T06:55:16.101392Z",
+      "expires_at": "0001-01-01T00:00:00.000Z"
+    },
+    "ingress_vips": [
+      {
+        "cluster_id": "ceeb9d66-c894-4224-adcc-72283fd213f4",
+        "ip": "192.168.69.201",
+        "verification": "succeeded"
+      }
+    ],
+    "install_completed_at": "0001-01-01T00:00:00.000Z",
+    "install_started_at": "0001-01-01T00:00:00.000Z",
+    "ip_collisions": "{}",
+    "kind": "Cluster",
+    "last-installation-preparation": {},
+    "load_balancer": {
+      "type": "cluster-managed"
+    },
+    "machine_networks": [
+      {
+        "cidr": "192.168.69.0/24",
+        "cluster_id": "ceeb9d66-c894-4224-adcc-72283fd213f4"
+      }
+    ],
+    "monitored_operators": [
+      {
+        "bundles": null,
+        "cluster_id": "ceeb9d66-c894-4224-adcc-72283fd213f4",
+        "name": "console",
+        "operator_type": "builtin",
+        "status_updated_at": "0001-01-01T00:00:00.000Z",
+        "timeout_seconds": 3600
+      }
+    ],
+    "name": "rguske-ocp42-disco",
+    "network_type": "OVNKubernetes",
+    "ocp_release_image": "rguske-rhel9-disco-bastion.disco.local:8443/disco/openshift/release-images@sha256:5d591a70c92a6dfa3b6b948ffe5e5eac7ab339c49005744006aa0dd9d6d98898",
+    "openshift_version": "4.21.10",
+    "org_soft_timeouts_enabled": true,
+    "platform": {
+      "external": {},
+      "type": "baremetal"
+    },
+    "progress": {
+      "finalizing_stage_started_at": "0001-01-01T00:00:00.000Z"
+    },
+    "pull_secret_set": true,
+    "ready_host_count": 1,
+    "schedulable_masters": false,
+    "schedulable_masters_forced_true": true,
+    "service_networks": [
+      {
+        "cidr": "172.30.0.0/16",
+        "cluster_id": "ceeb9d66-c894-4224-adcc-72283fd213f4"
+      }
+    ],
+    "ssh_public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIODE9JnscEgdhihWM2xsqlqsRgBjkVzGQ/Ur5Ek0v9gF rguske@rguske-rhel9-disco-bastion.rguske.coe.muc.redhat.com",
+    "status": "insufficient",
+    "status_info": "Cluster is not ready for install",
+    "status_updated_at": "2026-04-27T06:55:16.099Z",
+    "total_host_count": 3,
+    "updated_at": "2026-04-27T06:56:30.886142Z",
+    "user_managed_networking": false,
+    "user_name": "admin",
+    "validations_info": "{\"configuration\":[{\"id\":\"platform-requirements-satisfied\",\"status\":\"success\",\"message\":\"Platform requirements satisfied\"},{\"id\":\"pull-secret-set\",\"status\":\"success\",\"message\":\"The pull secret is set.\"}],\"hosts-data\":[{\"id\":\"all-hosts-are-ready-to-install\",\"status\":\"failure\",\"message\":\"The cluster has hosts that are not ready to install.\"},{\"id\":\"sufficient-masters-count\",\"status\":\"success\",\"message\":\"The cluster has the exact amount of dedicated control plane nodes.\"}],\"network\":[{\"id\":\"api-vips-defined\",\"status\":\"success\",\"message\":\"API virtual IPs are defined.\"},{\"id\":\"api-vips-valid\",\"status\":\"success\",\"message\":\"api vips 192.168.69.200 belongs to the Machine CIDR and is not in use.\"},{\"id\":\"cluster-cidr-defined\",\"status\":\"success\",\"message\":\"The Cluster Network CIDR is defined.\"},{\"id\":\"dns-domain-defined\",\"status\":\"success\",\"message\":\"The base domain is defined.\"},{\"id\":\"ingress-vips-defined\",\"status\":\"success\",\"message\":\"Ingress virtual IPs are defined.\"},{\"id\":\"ingress-vips-valid\",\"status\":\"success\",\"message\":\"ingress vips 192.168.69.201 belongs to the Machine CIDR and is not in use.\"},{\"id\":\"machine-cidr-defined\",\"status\":\"success\",\"message\":\"The Machine Network CIDR is defined.\"},{\"id\":\"machine-cidr-equals-to-calculated-cidr\",\"status\":\"success\",\"message\":\"The Cluster Machine CIDR is equivalent to the calculated CIDR.\"},{\"id\":\"network-prefix-valid\",\"status\":\"success\",\"message\":\"The Cluster Network prefix is valid.\"},{\"id\":\"network-type-valid\",\"status\":\"success\",\"message\":\"The cluster has a valid network type\"},{\"id\":\"networks-same-address-families\",\"status\":\"success\",\"message\":\"Same address families for all networks.\"},{\"id\":\"no-cidrs-overlapping\",\"status\":\"success\",\"message\":\"No CIDRS are overlapping.\"},{\"id\":\"ntp-server-configured\",\"status\":\"success\",\"message\":\"No ntp problems found\"},{\"id\":\"service-cidr-defined\",\"status\":\"success\",\"message\":\"The Service Network CIDR is defined.\"}],\"operators\":[{\"id\":\"amd-gpu-requirements-satisfied\",\"status\":\"success\",\"message\":\"amd-gpu is disabled\"},{\"id\":\"authorino-requirements-satisfied\",\"status\":\"success\",\"message\":\"authorino is disabled\"},{\"id\":\"cluster-observability-requirements-satisfied\",\"status\":\"success\",\"message\":\"cluster-observability is disabled\"},{\"id\":\"cnv-requirements-satisfied\",\"status\":\"success\",\"message\":\"cnv is disabled\"},{\"id\":\"fence-agents-remediation-requirements-satisfied\",\"status\":\"success\",\"message\":\"fence-agents-remediation is disabled\"},{\"id\":\"kmm-requirements-satisfied\",\"status\":\"success\",\"message\":\"kmm is disabled\"},{\"id\":\"kube-descheduler-requirements-satisfied\",\"status\":\"success\",\"message\":\"kube-descheduler is disabled\"},{\"id\":\"loki-requirements-satisfied\",\"status\":\"success\",\"message\":\"loki is disabled\"},{\"id\":\"lso-requirements-satisfied\",\"status\":\"success\",\"message\":\"lso is disabled\"},{\"id\":\"lvm-requirements-satisfied\",\"status\":\"success\",\"message\":\"lvm is disabled\"},{\"id\":\"mce-requirements-satisfied\",\"status\":\"success\",\"message\":\"mce is disabled\"},{\"id\":\"metallb-requirements-satisfied\",\"status\":\"success\",\"message\":\"metallb is disabled\"},{\"id\":\"mtv-requirements-satisfied\",\"status\":\"success\",\"message\":\"mtv is disabled\"},{\"id\":\"nmstate-requirements-satisfied\",\"status\":\"success\",\"message\":\"nmstate is disabled\"},{\"id\":\"node-feature-discovery-requirements-satisfied\",\"status\":\"success\",\"message\":\"node-feature-discovery is disabled\"},{\"id\":\"node-healthcheck-requirements-satisfied\",\"status\":\"success\",\"message\":\"node-healthcheck is disabled\"},{\"id\":\"node-maintenance-requirements-satisfied\",\"status\":\"success\",\"message\":\"node-maintenance is disabled\"},{\"id\":\"numa-resources-requirements-satisfied\",\"status\":\"success\",\"message\":\"numaresources is disabled\"},{\"id\":\"nvidia-gpu-requirements-satisfied\",\"status\":\"success\",\"message\":\"nvidia-gpu is disabled\"},{\"id\":\"oadp-requirements-satisfied\",\"status\":\"success\",\"message\":\"oadp is disabled\"},{\"id\":\"odf-requirements-satisfied\",\"status\":\"success\",\"message\":\"odf is disabled\"},{\"id\":\"openshift-ai-requirements-satisfied\",\"status\":\"success\",\"message\":\"openshift-ai is disabled\"},{\"id\":\"openshift-logging-requirements-satisfied\",\"status\":\"success\",\"message\":\"openshift-logging is disabled\"},{\"id\":\"osc-requirements-satisfied\",\"status\":\"success\",\"message\":\"osc is disabled\"},{\"id\":\"pipelines-requirements-satisfied\",\"status\":\"success\",\"message\":\"pipelines is disabled\"},{\"id\":\"self-node-remediation-requirements-satisfied\",\"status\":\"success\",\"message\":\"self-node-remediation is disabled\"},{\"id\":\"serverless-requirements-satisfied\",\"status\":\"success\",\"message\":\"serverless is disabled\"},{\"id\":\"servicemesh-requirements-satisfied\",\"status\":\"success\",\"message\":\"servicemesh is disabled\"}]}",
+    "vip_dhcp_allocation": false
+  }
+]
+```
+
+The `status_info` is telling something:
+
+```code
+status: insufficient
+status_info: Cluster is not ready for install
+```
+
+Specifically:
+
+```code
+"all-hosts-are-ready-to-install" = failure
+"The cluster has hosts that are not ready to install."
+```
+
+The next step is to inspect host validation failures:
+
+```code
+curl -s \
+  -H "Authorization: $TOKEN" \
+  http://localhost:8090/api/assisted-install/v2/clusters/ceeb9d66-c894-4224-adcc-72283fd213f4/hosts \
+| jq '.[] | {hostname: .requested_hostname, status: .status, status_info: .status_info, validations: .validations_info}'
+```
+
+My cluster was stuck in validation progress because of a simple "copy/paste" mistake at the hostname section. I had two times the same hostname configured...
+
+```code
+Affected hosts:
+
+Host ID 35ddb3ef-...
+Host ID 96f0818e-...
+
+Validation failure:
+
+hostname-unique = failure
+Hostname rguske-ocp42-disco-2.disco.local is not unique in cluster
+```
+
+If the discovery was successful, run: `journalctl -b -f -u release-image.service -u bootkube.service -u node-image-pull.service -f`
