@@ -1241,6 +1241,146 @@ spec:
 EOF
 ```
 
+After applying the new CatalogSource, delete the old one.
+
+Install the OpenShift Update Serve Operator and create the instance using the created file which is located in `/home/rguske/openshift/mirror/working-dir/cluster-resources/`:
+
+updateService.yaml
+
+```yaml
+apiVersion: updateservice.operator.openshift.io/v1
+kind: UpdateService
+metadata:
+  annotations:
+    createdAt: Monday, 27-Apr-26 15:46:08 UTC
+    createdBy: oc-mirror v2
+    oc-mirror_version: 4.21.0-202604140043.p2.g12f1b06.assembly.stream.el9-12f1b06
+  name: update-service-oc-mirror
+spec:
+  graphDataImage: rguske-rhel9-disco-bastion.disco.local:8443/disco/openshift/graph-image:latest
+  releases: rguske-rhel9-disco-bastion.disco.local:8443/disco/openshift/release-images
+  replicas: 2
+status: {}
+```
+
+The update service will be available after applying this configuration but it'll not trust your registry. Therefore, a ConfigMap with the root certificate of yopur mirror registry needs to be created.
+
+Docs: [Configuring access to a secured registry for the OpenShift Update Service](https://docs.redhat.com/en/documentation/openshift_container_platform/4.21/html/disconnected_environments/updating-a-cluster-in-a-disconnected-environment#registry-configuration-for-update-service_updating-disconnected-cluster-osus)
+Docs: [Configuring additional trust stores for image registry access ](https://docs.redhat.com/en/documentation/openshift_container_platform/4.21/html-single/registry/index#images-configuration-cas_configuring-registry-operator)
+
+You can add references to a config map that has additional certificate authorities (CAs) to be trusted during image registry access to the `image.config.openshift.io/cluster` custom resource (CR).
+
+Important is, that the name of your mirror registry is included as well as the name `updateservice-registry`, which will be picked up by the CLuster Service Operator.
+
+```yaml
+oc -n openshift-config apply -f - <<EOF
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: my-mirror-registry-ca
+data:
+  updateservice-registry: |
+    -----BEGIN CERTIFICATE-----
+    MIIEHDCCAwSgAwIBAgIUFY/Z+WmgJ+8SIREIa3Cl3FRj9jYwDQYJKoZIhvcNAQEL
+    BQAwgYAxCzAJBgNVBAYTAlVTMQswCQYDVQQIDAJWQTERMA8GA1UEBwwITmV3IFlv
+    cmsxDTALBgNVBAoMBFF1YXkxETAPBgNVBAsMCERpdmlzaW9uMS8wLQYDVQQDDCZy
+    Z3Vza2UtcmhlbDktZGlzY28tYmFzdGlvbi5kaXNjby5sb2NhbDAeFw0yNjA0MjQx
+    NDE3MTZaFw0yOTAyMTExNDE3MTZaMIGAMQswCQYDVQQGEwJVUzELMAkGA1UECAwC
+    VkExETAPBgNVBAcMCE5ldyBZb3JrMQ0wCwYDVQQKDARRdWF5MREwDwYDVQQLDAhE
+...
+    AQUFBwMBMDEGA1UdEQQqMCiCJnJndXNrZS1yaGVsOS1kaXNjby1iYXN0aW9uLmRp
+    c2NvLmxvY2FsMBIGA1UdEwEB/wQIMAYBAf8CAQEwHQYDVR0OBBYEFJvWooMOH9HM
+    69OZwSFGVXzbJ5wrMA0GCSqGSIb3DQEBCwUAA4IBAQA6BS7YqGzv0TYbLWs0iG3r
+    YTQeVGt1dZK5uf8k2mRHiNkmPbNAsSeEb8eh+Wes3MNn6iT3fC55kZVdGL21jzYu
+    ZyYMLJyR83M5sD7sVbbuSOkYgNt20ZdIcqigIkyABRkqcahC7kOypXXJbhkj3fYL
+    kyGukgbJRF96hCB9oO8bW3evact/P40arsjHT6qKRIZf0kKm7CYUVRjI4+jlz+oV
+    n7iB3Rs8P16UvuFB2LfWmyNfuu21InZhXLmJ+rZJc0qnpq6Rm8iXAq0n8L5ycCHc
+    gPt4JJQZJ8JP6bSREgAhqfNSngfLj73O1+S2fuN7i3mCQEv0UajEhQgHQtcZ6r1C
+    -----END CERTIFICATE-----
+  rguske-rhel9-disco-bastion.rguske.coe.muc.redhat.com..8443: |
+    -----BEGIN CERTIFICATE-----
+    MIIEHDCCAwSgAwIBAgIUFY/Z+WmgJ+8SIREIa3Cl3FRj9jYwDQYJKoZIhvcNAQEL
+    BQAwgYAxCzAJBgNVBAYTAlVTMQswCQYDVQQIDAJWQTERMA8GA1UEBwwITmV3IFlv
+    cmsxDTALBgNVBAoMBFF1YXkxETAPBgNVBAsMCERpdmlzaW9uMS8wLQYDVQQDDCZy
+    Z3Vza2UtcmhlbDktZGlzY28tYmFzdGlvbi5kaXNjby5sb2NhbDAeFw0yNjA0MjQx
+...
+    c2NvLmxvY2FsMBIGA1UdEwEB/wQIMAYBAf8CAQEwHQYDVR0OBBYEFJvWooMOH9HM
+    69OZwSFGVXzbJ5wrMA0GCSqGSIb3DQEBCwUAA4IBAQA6BS7YqGzv0TYbLWs0iG3r
+    YTQeVGt1dZK5uf8k2mRHiNkmPbNAsSeEb8eh+Wes3MNn6iT3fC55kZVdGL21jzYu
+    ZyYMLJyR83M5sD7sVbbuSOkYgNt20ZdIcqigIkyABRkqcahC7kOypXXJbhkj3fYL
+    kyGukgbJRF96hCB9oO8bW3evact/P40arsjHT6qKRIZf0kKm7CYUVRjI4+jlz+oV
+    n7iB3Rs8P16UvuFB2LfWmyNfuu21InZhXLmJ+rZJc0qnpq6Rm8iXAq0n8L5ycCHc
+    gPt4JJQZJ8JP6bSREgAhqfNSngfLj73O1+S2fuN7i3mCQEv0UajEhQgHQtcZ6r1C
+    -----END CERTIFICATE-----
+EOF
+```
+
+After creating the `ConfigMap`, edit the CR `config.openshift.io/v1` named cluster with the new `additionalTrustedCA`
+
+```yaml
+[...]
+spec:
+  additionalTrustedCA:
+    name: my-mirror-registry-ca
+```
+
+Check the pods within the namespace `openshift-update-service`:
+
+```code
+oc -n openshift-update-service get pods
+NAME                                      READY   STATUS    RESTARTS   AGE
+graph-data-tag-digest                     1/1     Running   0          2m17s
+update-service-oc-mirror-98764cbd-cj2sd   2/2     Running   0          8m4s
+update-service-oc-mirror-98764cbd-t87tf   2/2     Running   0          8m4s
+updateservice-operator-74d959fd7d-qzj8s   1/1     Running   0          46m
+```
+
+The next step is to update the Cluster Update Service with the new `route` object.
+
+```code
+oc -n openshift-update-service get route
+NAME                             HOST/PORT                                                                                     PATH   SERVICES                                 PORT            TERMINATION   WILDCARD
+update-service-oc-mirror-route   update-service-oc-mirror-route-openshift-update-service.apps.rguske-ocp42-disco.disco.local          update-service-oc-mirror-policy-engine   policy-engine   edge/None     None
+```
+
+After updating the `route` via the WebConsole in Administration - Cluster Settings - Upstream Configuration, the Service will complain about the not trusted cluster certificate.
+
+It is necessary to patch the cluster-wide `proxy` configuration with a config map object which contains the cluster self-signed certificate.
+
+Create the `cm`:
+
+```yaml
+oc apply -f - <<EOF
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ocp-disco-ingress-certs
+  namespace: openshift-config
+data:
+  ca-bundle.crt: |
+    # MyPrivateCA (root.crt)
+    -----BEGIN CERTIFICATE-----
+   zzzzz
+    -----END CERTIFICATE-----
+EOF
+```
+
+Patch the `proxy` object:
+
+```code
+oc patch proxy/cluster \
+     --type=merge \
+     --patch='{"spec":{"trustedCA":{"name":"user-ca-bundle"}}}'
+```
+
+Check the updates to the cluster operators:
+
+```code
+oc get co -w
+```
+
+After a successful reconciliation, the update graph should look good.
+
 ## Troubleshooting
 
 Typical disconnected blockers in OpenShift agent-based installs are:
@@ -1329,13 +1469,13 @@ Obtain the token:
 
 ```code
 podman inspect 580  | jq '.[0].Config.Env' | grep USER_AUTH_TOKEN
-  "USER_AUTH_TOKEN=eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9.eyJhdXRoX3NjaGVtZSI6InVzZXJBdXRoIn0.wRT3yMr-KJIdgEwAuS8c0WxfnDngsjyNgXnBo9TSorZPeuEp6S0W5q_wH2JOFQ1DwtPZBRY3UKEswjgXEJSbrQ",
+  "USER_AUTH_TOKEN=eyJhbGciOiJFUzI1Ni...OFQ1DwtPZBRY3UKEswjgXEJSbrQ",
 ```
 
 Check the cluster status:
 
 ```code
-TOKEN="eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9.eyJhdXRoX3NjaGVtZSI6InVzZXJBdXRoIn0.wRT3yMr-KJIdgEwAuS8c0WxfnDngsjyNgXnBo9TSorZPeuEp6S0W5q_wH2JOFQ1DwtPZBRY3UKEswjgXEJSbrQ"
+TOKEN="eyJhbGciOiJFUzI1Ni...OFQ1DwtPZBRY3UKEswjgXEJSbrQ"
 
 curl -s \
   -H "Authorization: $TOKEN" \
