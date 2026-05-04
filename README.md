@@ -728,7 +728,6 @@ oc mirror list operators --catalogs --version=4.21 --v1
 
 ```yaml
 tee imagesetconfiguration.yaml > /dev/null <<'EOF'
-# oc mirror --v2 --config imageset-config.yaml   --workspace file://$(pwd)/oc-mirror-workspace/   docker://mirror-registry.disco.coe.muc.redhat.com:5000/disco
 kind: ImageSetConfiguration
 apiVersion: mirror.openshift.io/v2alpha1
 mirror:
@@ -738,24 +737,11 @@ mirror:
       type: ocp
       shortestPath: true
       minVersion: 4.21.10
-      # maxVersion: 4.21.9
+      maxVersion: 4.21.11
     graph: true
   operators:
-  # oc mirror list operators --catalog registry.redhat.io/redhat/certified-operator-index:v4.21 --v1
   - catalog: registry.redhat.io/redhat/redhat-operator-index:v4.21
     packages:
-# Collection of channels
-#   for i in $(cat imageset-config.yaml | grep '^##' | tr -d '#' ); do echo $i; oc mirror list operators --catalog=registry.redhat.io/redhat/redhat-operator-index:v4.21 --package=${i/:*} ;  done
-#
-# Collection versions
-#   for i in $(cat imageset-config.yaml | grep '^##' | tr -d '#' ); do echo $i; oc mirror list operators --catalog=registry.redhat.io/redhat/redhat-operator-index:v4.21 --package=${i/:*} --channel=${i/*:};  done
-#
-## kernel-module-management:stable
-    - name: kernel-module-management
-      channels:
-      - name: stable
-        minVersion: '2.5.1'
-        # maxVersion: '1.15.0'
 ## cincinnati-operator:v1
     - name: cincinnati-operator
       channels:
@@ -780,17 +766,27 @@ mirror:
       - name: stable
         minVersion: '4.21.0-202604140043'
         # maxVersion: 'v4.17.0'
-## web-terminal:stable
+## web-terminal:fast
     - name: web-terminal
       channels:
       - name: fast
         minVersion: '1.16.0'
         # maxVersion: 'v1.15.0'
 ## web-terminal relies on devworkspace-operator
-    - name: devworkspace-operator
+#    - name: devworkspace-operator
+#      channels:
+#      - name: fast
+#        minVersion: '0.40-1776457293'
+## OpenShift Data Foundation
+    - name: odf-operator
       channels:
-      - name: fast
-        minVersion: '0.40-1776457293'
+      - name: stable-4.21
+        minVersion: '4.21.2-rhodf'
+## OpenShift Local Storage Operator
+    - name: local-storage-operator
+      channels:
+      - name: stable
+        minVersion: '4.21.0-202604200440'
   additionalImages:
     - name: registry.redhat.io/ubi8/ubi:latest
     - name: registry.redhat.io/rhel9/rhel-guest-image:latest
