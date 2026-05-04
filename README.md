@@ -25,6 +25,7 @@ Source: [Understanding disconnected installation mirroring](https://docs.redhat.
     - [Uninstalling the Mirror Registry](#uninstalling-the-mirror-registry)
   - [Mirroring Images](#mirroring-images)
   - [Creating the image set configuration](#creating-the-image-set-configuration)
+    - [unexpected status code 413 Request Entity Too Large](#unexpected-status-code-413-request-entity-too-large)
   - [Installing a disconnected Cluster using the Agent Based Installer](#installing-a-disconnected-cluster-using-the-agent-based-installer)
     - [Cluster Preperations](#cluster-preperations)
   - [Configurations](#configurations)
@@ -875,6 +876,17 @@ Results:
 2026/04/24 11:34:43  [INFO]   : mirror time     : 50m26.676667165s
 2026/04/24 11:34:43  [INFO]   : 👋 Goodbye, thank you for using oc-mirror
 ```
+
+### unexpected status code 413 Request Entity Too Large
+
+If this hits you, try using the following options:
+
+```code
+oc mirror -c $(pwd)/imagesetconfiguration.yaml --from file://$(pwd)/mirror/ docker://rguske-rhel9-disco-bastion.
+disco.local:8443/disco --image-timeout 2h --parallel-images=10 --parallel-layers=10 --retry-times=5 --retry-delay=10s --v2
+```
+
+Documented in [oc-mirror v2 fails with context deadline exceeded when mirroring large images to a local registry in RHOCP 4](https://access.redhat.com/solutions/7130341).
 
 ## Installing a disconnected Cluster using the Agent Based Installer
 
