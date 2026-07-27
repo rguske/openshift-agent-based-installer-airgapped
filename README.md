@@ -729,7 +729,6 @@ oc mirror list operators --catalogs --version=4.21 --v1
 
 ```yaml
 tee imagesetconfiguration.yaml > /dev/null <<'EOF'
-
 kind: ImageSetConfiguration
 apiVersion: mirror.openshift.io/v2alpha1
 mirror:
