@@ -729,77 +729,84 @@ oc mirror list operators --catalogs --version=4.21 --v1
 
 ```yaml
 tee imagesetconfiguration.yaml > /dev/null <<'EOF'
+
 kind: ImageSetConfiguration
 apiVersion: mirror.openshift.io/v2alpha1
 mirror:
-  platform:
-    channels:
-    - name: stable-4.21
-      type: ocp
-      shortestPath: true
-      minVersion: 4.21.10
-      maxVersion: 4.21.11
-    graph: true
   operators:
-  - catalog: registry.redhat.io/redhat/redhat-operator-index:v4.21
-    packages:
-## cincinnati-operator:v1
-    - name: cincinnati-operator
-      channels:
-      - name: v1
-        minVersion: '5.0.3'
-        # maxVersion: '5.0.3'
-## kubernetes-nmstate-operator:stable
-    - name: kubernetes-nmstate-operator
-      channels:
-      - name: 'stable'
-        minVersion: '4.21.0-202604080925'
-        # maxVersion: '4.17.0-202502120148'
-## kubevirt-hyperconverged:stable
-    - name: kubevirt-hyperconverged
-      channels:
-      - name: stable
-        minVersion: '4.21.3'
-        # maxVersion: '4.17.4'
-## metallb-operator:stable
-    - name: metallb-operator
-      channels:
-      - name: stable
-        minVersion: '4.21.0-202604140043'
-        # maxVersion: 'v4.17.0'
-## web-terminal:fast
-    - name: web-terminal
-      channels:
-      - name: fast
-        minVersion: '1.16.0'
-        # maxVersion: 'v1.15.0'
-## web-terminal relies on devworkspace-operator
-#    - name: devworkspace-operator
-#      channels:
-#      - name: fast
-#        minVersion: '0.40-1776457293'
-## OpenShift Data Foundation
-    - name: odf-operator
-      channels:
-      - name: stable-4.21
-        minVersion: '4.21.2-rhodf'
-## OpenShift Local Storage Operator
-    - name: local-storage-operator
-      channels:
-      - name: stable
-        minVersion: '4.21.0-202604200440'
+    - catalog: registry.redhat.io/redhat/redhat-operator-index:v4.21
+      packages:
+        - name: cincinnati-operator
+          channels:
+            - name: v1
+              minVersion: 5.0.3
+        - name: kubernetes-nmstate-operator
+          channels:
+            - name: stable
+              minVersion: 4.21.0-202604080925
+        - name: kubevirt-hyperconverged
+          channels:
+            - name: stable
+              minVersion: 4.21.3
+        - name: metallb-operator
+          channels:
+            - name: stable
+              minVersion: 4.21.0-202604140043
+        - name: web-terminal
+          channels:
+            - name: fast
+              minVersion: 1.16.0
+        - name: devworkspace-operator
+          channels:
+            - name: fast
+              minVersion: 0.40.1
+        - name: odf-operator
+          channels:
+            - name: stable-4.21
+              minVersion: 4.21.2-rhodf
+        - name: local-storage-operator
+          channels:
+            - name: stable
+              minVersion: 4.21.0-202604140347
+        - name: ocs-operator
+          channels: []
+        - name: mcg-operator
+          channels: []
+        - name: odf-csi-addons-operator
+          channels: []
+        - name: ocs-client-operator
+          channels: []
+        - name: cephcsi-operator
+          channels:
+            - name: stable-4.21
+        - name: odf-external-snapshotter-operator
+          channels:
+            - name: stable-4.21
+        - name: recipe
+          channels:
+            - name: stable-4.21
+        - name: rook-ceph-operator
+          channels: []
+        - name: odf-dependencies
+          channels: []
+        - name: odf-prometheus-operator
+          channels:
+            - name: stable-4.21
+              minVersion: 4.21.2-rhodf
   additionalImages:
-    - name: registry.redhat.io/ubi8/ubi:latest
-    - name: registry.redhat.io/rhel9/rhel-guest-image:latest
     - name: quay.io/rhn_support_sreber/curl:latest
-    # Important for KMM & GPFS Build
     - name: registry.redhat.io/ubi9/ubi-minimal:latest
-    - name: registry.redhat.io/ubi9/ubi@sha256:20f695d2a91352d4eaa25107535126727b5945bff38ed36a3e59590f495046f0
-    - name: quay.io/rguske/vddk@sha256:26d07e11f7f8dcca263e83a1d942fe9274c90418c5bfc17fad88b61ddabf95ed
-    - name: quay.io/rguske/simple-web-app@sha256:f1c474d0b214975d2fb95d14967b620daa0cdbef094ee509fec1659d55c3a6de
-    # Virtualization Images
     - name: quay.io/containerdisks/centos-stream:9
+    - name: registry.redhat.io/rhel9/rhel-guest-image:latest
     - name: quay.io/containerdisks/fedora:latest
+  platform:
+    graph: true
+    channels:
+      - name: stable-4.21
+        type: ocp
+        minVersion: 4.21.10
+        maxVersion: 4.21.11
+        shortestPath: true
 EOF
 ```
 
